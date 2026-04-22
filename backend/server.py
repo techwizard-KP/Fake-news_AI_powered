@@ -91,31 +91,44 @@ def resolve_google_news_url(url: str) -> str:
     return url
 
 
-def fetch_article(url: str) -> dict:
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
-    }
-    resp = requests.get(url, headers=headers, timeout=20)
-    resp.raise_for_status()
-    soup = BeautifulSoup(resp.content, "lxml")
-    # title
+BROWSER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
+        "(KHTML, like Gecko) Version/17.2 Safari/605.1.15"
+    ),
+    "Accept": (
+        "text/html,application/xhtml+xml,application/xml;q=0.9,"
+        "image/webp,image/apng,*/*;q=0.8"
+    ),
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Referer": "https://www.google.com/",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "cross-site",
+    "Sec-Fetch-User": "?1",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+}
+
+
+def _parse_html_article(content: bytes) -> dict:
+    soup = BeautifulSoup(content, "lxml")
     title = ""
     if soup.title and soup.title.string:
         title = soup.title.string.strip()
     og = soup.find("meta", property="og:title")
     if og and og.get("content"):
         title = og["content"].strip()
-    # description
     description = ""
     desc_tag = soup.find("meta", attrs={"name": "description"}) or soup.find("meta", property="og:description")
     if desc_tag and desc_tag.get("content"):
         description = desc_tag["content"].strip()
-    # image
     image = ""
     img_tag = soup.find("meta", property="og:image")
     if img_tag and img_tag.get("content"):
         image = img_tag["content"].strip()
-    # body text
     for tag in soup(["script", "style", "noscript", "header", "footer", "nav", "aside"]):
         tag.decompose()
     article_tag = soup.find("article") or soup.find("main") or soup.body
@@ -129,6 +142,89 @@ def fetch_article(url: str) -> dict:
     if not body:
         body = soup.get_text(" ", strip=True)[:5000]
     return {"title": title or "Untitled", "description": description, "image": image, "body": body}
+
+
+def _fetch_via_jina_reader(url: str) -> dict:
+    """Fallback extractor for bot-blocked/paywalled sites using the free
+    Jina Reader service (https://r.jina.ai). Returns clean article markdown."""
+    reader_url = f"https://r.jina.ai/{url}"
+    resp = requests.get(
+        reader_url,
+        headers={"Accept": "text/plain", "User-Agent": BROWSER_HEADERS["User-Agent"]},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    text = resp.text
+    # Jina surfaces upstream errors as "Warning: Target URL returned error ..."
+    if "Target URL returned error" in text or "requiring CAPTCHA" in text:
+        raise RuntimeError("upstream site blocked content extraction (paywall/CAPTCHA)")
+    title = ""
+    body = text
+    m_title = re.search(r"^Title:\s*(.+)$", text, flags=re.MULTILINE)
+    if m_title:
+        title = m_title.group(1).strip()
+    m_content = re.search(r"Markdown Content:\s*\n", text)
+    if m_content:
+        body = text[m_content.end():].strip()
+    body = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", body)
+    body = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", body)
+    body = body.strip()[:8000]
+    if _looks_like_block_page({"title": title, "body": body}):
+        raise RuntimeError("extracted content appears to be a bot-block page")
+    return {"title": title or "Untitled", "description": "", "image": "", "body": body}
+
+
+BLOCK_PAGE_SIGNATURES = (
+    "are you a robot",
+    "access denied",
+    "forbidden",
+    "enable javascript",
+    "please enable cookies",
+    "just a moment",
+    "attention required",
+    "cloudflare",
+    "captcha",
+    "bot detection",
+    "checking your browser",
+)
+
+
+def _looks_like_block_page(parsed: dict) -> bool:
+    blob = f"{parsed.get('title','')} {parsed.get('body','')[:600]}".lower()
+    return any(sig in blob for sig in BLOCK_PAGE_SIGNATURES)
+
+
+def fetch_article(url: str) -> dict:
+    """Fetch + parse article. Tries a direct browser-like request first and
+    falls back to Jina Reader on 403/blocked/short-content/bot-block pages."""
+    try:
+        resp = requests.get(url, headers=BROWSER_HEADERS, timeout=20, allow_redirects=True)
+        if resp.status_code == 200:
+            parsed = _parse_html_article(resp.content)
+            if (
+                parsed["body"]
+                and len(parsed["body"]) >= 200
+                and not _looks_like_block_page(parsed)
+            ):
+                return parsed
+            logger.info(
+                f"Direct fetch unusable (blocked/short: "
+                f"{len(parsed['body'])} chars, title='{parsed['title'][:60]}'), trying Jina"
+            )
+        else:
+            logger.info(f"Direct fetch status {resp.status_code}, trying Jina")
+    except Exception as e:
+        logger.info(f"Direct fetch failed ({e}), trying Jina")
+
+    # Fallback: Jina Reader
+    try:
+        return _fetch_via_jina_reader(url)
+    except Exception as e:
+        logger.info(f"Jina fallback failed: {e}")
+        raise RuntimeError(
+            "This site blocks automated access (paywall or anti-bot protection). "
+            "Try a different article URL or paste the text directly."
+        )
 
 
 # ----------------- GEMINI EXPLANATION -----------------
