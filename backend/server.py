@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field, ConfigDict
 import requests
 from bs4 import BeautifulSoup
 import feedparser
+from googlenewsdecoder import gnewsdecoder
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -67,6 +68,29 @@ def classify_text_sync(title: str, text: str) -> dict:
 
 
 # ----------------- ARTICLE EXTRACTION -----------------
+# ----------------- ARTICLE EXTRACTION -----------------
+_url_cache: dict = {}
+
+
+def resolve_google_news_url(url: str) -> str:
+    """Decode news.google.com RSS links into the original publisher URL.
+    Falls back to the input URL on failure. Cached to avoid repeated decoding."""
+    if "news.google.com" not in url:
+        return url
+    cached = _url_cache.get(url)
+    if cached:
+        return cached
+    try:
+        res = gnewsdecoder(url, interval=1)
+        if res and res.get("status") and res.get("decoded_url"):
+            decoded = res["decoded_url"]
+            _url_cache[url] = decoded
+            return decoded
+    except Exception as e:
+        logger.warning(f"URL decode failed for {url[:80]}: {e}")
+    return url
+
+
 def fetch_article(url: str) -> dict:
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
@@ -252,6 +276,9 @@ async def analyze(req: AnalyzeRequest):
     url = req.url.strip()
     if not re.match(r"^https?://", url):
         raise HTTPException(status_code=400, detail="Invalid URL. Must start with http(s)://")
+    # Decode Google News redirect URLs into publisher URLs
+    if "news.google.com" in url:
+        url = await run_in_threadpool(resolve_google_news_url, url)
     try:
         article = await run_in_threadpool(fetch_article, url)
     except Exception as e:
@@ -347,7 +374,14 @@ async def trending(topic: str = "top", country: str = "US", lang: str = "en"):
         raise HTTPException(status_code=500, detail=f"Feed error: {e}")
 
     items: List[TrendingItem] = []
-    for entry in feed.entries[:30]:
+    entries = feed.entries[:15]
+    # Decode Google News encoded links to real publisher URLs in parallel
+    import asyncio
+    raw_links = [e.get("link", "") for e in entries]
+    decoded_links = await asyncio.gather(
+        *[run_in_threadpool(resolve_google_news_url, u) for u in raw_links]
+    )
+    for entry, link in zip(entries, decoded_links):
         raw_desc = entry.get("summary", "")
         clean_desc = re.sub(r"<[^>]+>", "", raw_desc)
         clean_desc = html.unescape(clean_desc).strip()
@@ -356,7 +390,7 @@ async def trending(topic: str = "top", country: str = "US", lang: str = "en"):
             source = getattr(entry.source, "title", "") or entry.source.get("title", "") if hasattr(entry.source, "get") else getattr(entry.source, "title", "")
         items.append(TrendingItem(
             title=entry.get("title", ""),
-            link=entry.get("link", ""),
+            link=link or entry.get("link", ""),
             source=source or "",
             published=entry.get("published", ""),
             description=clean_desc[:250],
