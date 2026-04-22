@@ -118,15 +118,16 @@ async def get_explanation(title: str, body: str, verdict: str, confidence: float
             api_key=key,
             session_id=f"fnd-{uuid.uuid4()}",
             system_message=(
-                "You are a media-literacy analyst. You are given a news article and a BERT model's "
-                "classification (FAKE or REAL with confidence). Produce a short, analytical "
-                "explanation (4-6 bullet points) covering: source credibility signals, tone & "
-                "language, factual verifiability, sensationalism/bias, and a final takeaway. "
-                "Be objective. Do NOT say you are an AI. Output markdown bullets only."
+                "You are a media-literacy analyst. You are given a news article and the combined "
+                "verdict (FAKE or REAL with confidence) from an ensemble of a BERT classifier and "
+                "a Gemini reviewer. Produce a short, analytical explanation (4-6 bullet points) "
+                "covering: source credibility signals, tone & language, factual verifiability, "
+                "sensationalism/bias, and a final takeaway. Be objective. Do NOT say you are an AI. "
+                "Output markdown bullets only."
             ),
         ).with_model("gemini", "gemini-2.5-flash")
         prompt = (
-            f"Model verdict: {verdict} (confidence {confidence*100:.1f}%)\n\n"
+            f"Ensemble verdict: {verdict} (confidence {confidence*100:.1f}%)\n\n"
             f"Title: {title}\n\n"
             f"Article excerpt:\n{body[:3500]}"
         )
@@ -135,6 +136,67 @@ async def get_explanation(title: str, body: str, verdict: str, confidence: float
     except Exception as e:
         logger.exception("Explanation failed")
         return f"Explanation unavailable: {e}"
+
+
+# ----------------- GEMINI SECOND-OPINION CLASSIFIER -----------------
+async def gemini_classify(title: str, body: str) -> dict:
+    """Independent verdict from Gemini. Returns {verdict, confidence, reason}."""
+    fallback = {"verdict": "UNKNOWN", "confidence": 0.0, "reason": "Unavailable"}
+    try:
+        from emergentintegrations.llm.chat import LlmChat, UserMessage
+        key = os.environ.get("EMERGENT_LLM_KEY")
+        if not key:
+            return fallback
+        chat = LlmChat(
+            api_key=key,
+            session_id=f"cls-{uuid.uuid4()}",
+            system_message=(
+                "You are a rigorous fact-checking classifier. Given a news article, classify "
+                "it as REAL (genuine reporting, plausible sourcing, factually grounded) or FAKE "
+                "(misinformation, fabrication, heavy bias, unverifiable claims, satire "
+                "presented as news). Return STRICT JSON only, no prose, no markdown fences, in "
+                'the form: {"verdict": "REAL" | "FAKE", "confidence": <float 0..1>, "reason": '
+                '"<one short sentence>"}.'
+            ),
+        ).with_model("gemini", "gemini-2.5-flash")
+        prompt = f"Title: {title}\n\nArticle:\n{body[:3500]}"
+        reply = await chat.send_message(UserMessage(text=prompt))
+        raw = str(reply).strip()
+        # Strip code fences if present
+        raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.IGNORECASE).strip()
+        # Extract first {...}
+        m = re.search(r"\{.*\}", raw, flags=re.DOTALL)
+        if not m:
+            return fallback
+        import json as _json
+        data = _json.loads(m.group(0))
+        v = str(data.get("verdict", "")).strip().upper()
+        if v not in ("REAL", "FAKE"):
+            return fallback
+        try:
+            c = float(data.get("confidence", 0.5))
+        except (TypeError, ValueError):
+            c = 0.5
+        c = max(0.0, min(1.0, c))
+        return {"verdict": v, "confidence": c, "reason": str(data.get("reason", ""))[:240]}
+    except Exception as e:
+        logger.exception("Gemini classification failed")
+        return {**fallback, "reason": f"error: {e}"}
+
+
+def combine_verdicts(bert: dict, gemini: dict) -> dict:
+    """Ensemble: if both agree, average confidence (boost). If disagree, trust Gemini
+    but lower the combined confidence. If Gemini unavailable, fall back to BERT."""
+    g_v = gemini.get("verdict", "UNKNOWN")
+    b_v = bert.get("verdict", "UNKNOWN")
+    b_c = float(bert.get("confidence", 0.0))
+    g_c = float(gemini.get("confidence", 0.0))
+    if g_v == "UNKNOWN":
+        return {"verdict": b_v, "confidence": b_c, "agreement": False}
+    if g_v == b_v:
+        return {"verdict": b_v, "confidence": min(0.99, (b_c + g_c) / 2 + 0.05), "agreement": True}
+    # Disagreement: trust Gemini, penalize confidence
+    return {"verdict": g_v, "confidence": max(0.5, g_c * 0.85), "agreement": False}
 
 
 # ----------------- MODELS -----------------
@@ -152,6 +214,12 @@ class AnalysisItem(BaseModel):
     verdict: str
     confidence: float
     explanation: str = ""
+    bert_verdict: str = ""
+    bert_confidence: float = 0.0
+    gemini_verdict: str = ""
+    gemini_confidence: float = 0.0
+    gemini_reason: str = ""
+    agreement: bool = True
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -191,21 +259,29 @@ async def analyze(req: AnalyzeRequest):
         raise HTTPException(status_code=400, detail="Could not extract enough article content from this URL.")
 
     try:
-        cls = await run_in_threadpool(classify_text_sync, article["title"], article["body"])
+        bert_cls = await run_in_threadpool(classify_text_sync, article["title"], article["body"])
     except Exception as e:
         logger.exception("Classification failed")
         raise HTTPException(status_code=500, detail=f"Classification failed: {e}")
 
-    explanation = await get_explanation(article["title"], article["body"], cls["verdict"], cls["confidence"])
+    gemini_cls = await gemini_classify(article["title"], article["body"])
+    final = combine_verdicts(bert_cls, gemini_cls)
+    explanation = await get_explanation(article["title"], article["body"], final["verdict"], final["confidence"])
 
     item = AnalysisItem(
         url=url,
         title=article["title"],
         description=article["description"],
         image=article["image"],
-        verdict=cls["verdict"],
-        confidence=cls["confidence"],
+        verdict=final["verdict"],
+        confidence=final["confidence"],
         explanation=explanation,
+        bert_verdict=bert_cls.get("verdict", ""),
+        bert_confidence=float(bert_cls.get("confidence", 0.0)),
+        gemini_verdict=gemini_cls.get("verdict", ""),
+        gemini_confidence=float(gemini_cls.get("confidence", 0.0)),
+        gemini_reason=gemini_cls.get("reason", ""),
+        agreement=bool(final.get("agreement", True)),
     )
     doc = item.model_dump()
     doc["created_at"] = doc["created_at"].isoformat()

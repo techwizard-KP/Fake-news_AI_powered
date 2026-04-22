@@ -65,6 +65,27 @@ function ConfidenceBar({ verdict, confidence }) {
   );
 }
 
+function ModelCard({ label, verdict, confidence, reason, testid }) {
+  const pct = Math.round((confidence || 0) * 100);
+  const isFake = verdict === "FAKE";
+  const isReal = verdict === "REAL";
+  const color = isFake ? "text-red-600" : isReal ? "text-emerald-600" : "text-slate-500";
+  const bar = isFake ? "bg-red-500" : isReal ? "bg-emerald-500" : "bg-slate-300";
+  return (
+    <div className="p-5" data-testid={testid}>
+      <div className="text-[10px] tracking-[0.3em] uppercase font-bold text-slate-500">{label}</div>
+      <div className={`font-chivo font-black text-2xl mt-1 ${color}`}>{verdict || "—"}</div>
+      <div className="flex items-center gap-3 mt-3">
+        <div className="flex-1 h-2 bg-slate-100 border border-slate-200 overflow-hidden">
+          <div className={`h-full ${bar}`} style={{ width: `${pct}%` }} />
+        </div>
+        <span className={`text-xs font-bold ${color}`}>{pct}%</span>
+      </div>
+      {reason && <p className="text-xs text-slate-600 mt-2 italic">&ldquo;{reason}&rdquo;</p>}
+    </div>
+  );
+}
+
 export default function ResultPanel({ result, loading }) {
   if (loading) {
     return (
@@ -165,11 +186,35 @@ export default function ResultPanel({ result, loading }) {
         )}
       </div>
 
+      {(result.bert_verdict || result.gemini_verdict) && (
+        <div className="border-b border-slate-300 grid grid-cols-2 divide-x divide-slate-300" data-testid="model-breakdown">
+          <ModelCard
+            label="BERT · RoBERTa"
+            verdict={result.bert_verdict}
+            confidence={result.bert_confidence}
+            testid="bert-card"
+          />
+          <ModelCard
+            label="Gemini · 2.5 Flash"
+            verdict={result.gemini_verdict}
+            confidence={result.gemini_confidence}
+            reason={result.gemini_reason}
+            testid="gemini-card"
+          />
+          {result.agreement === false && (
+            <div className="col-span-2 px-6 py-3 bg-amber-50 border-t border-amber-300 text-xs tracking-[0.15em] uppercase font-bold text-amber-800 flex items-center gap-2" data-testid="disagreement-banner">
+              <span className="w-2 h-2 bg-amber-500 inline-block" />
+              Models disagreed · final verdict follows the second-opinion review
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="p-6 md:p-8">
         <div className="flex items-center gap-2 mb-3">
           <Brain size={16} className="text-slate-900" weight="duotone" />
           <div className="text-[10px] tracking-[0.3em] uppercase font-bold text-slate-600">
-            Forensic Explanation · Gemini
+            Forensic Explanation · Ensemble Review
           </div>
         </div>
         <div data-testid="explanation">
