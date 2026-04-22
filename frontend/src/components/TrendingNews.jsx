@@ -70,7 +70,7 @@ export default function TrendingNews({ onVerify }) {
         {loading && items.length === 0 && (
           <div className="p-6 space-y-3">
             {[1, 2, 3, 4].map((i) => (
-              <div key={i} className="h-14 bg-slate-100 animate-pulse" />
+              <div key={`skel-${i}`} className="h-14 bg-slate-100 animate-pulse" />
             ))}
           </div>
         )}
@@ -78,7 +78,7 @@ export default function TrendingNews({ onVerify }) {
           <div className="p-6 text-sm text-slate-500 text-center">No articles found.</div>
         )}
         {items.map((item, idx) => (
-          <div key={idx} className="px-5 py-4 hover:bg-slate-50 group" data-testid={`trending-item-${idx}`}>
+          <div key={item.link || `${idx}-${item.title}`} className="px-5 py-4 hover:bg-slate-50 group" data-testid={`trending-item-${idx}`}>
             <div className="flex items-start gap-2">
               <span className="font-chivo font-black text-slate-300 text-sm pt-0.5 w-6">
                 {String(idx + 1).padStart(2, "0")}

@@ -58,12 +58,11 @@ def classify_text_sync(title: str, text: str) -> dict:
     label = result["label"].upper()
     score = float(result["score"])
     # Normalize to REAL / FAKE
-    if "FAKE" in label or label in ("LABEL_0",):
+    verdict = label  # safe default
+    if "FAKE" in label or label == "LABEL_0":
         verdict = "FAKE"
-    elif "REAL" in label or "TRUE" in label or label in ("LABEL_1",):
+    elif "REAL" in label or "TRUE" in label or label == "LABEL_1":
         verdict = "REAL"
-    else:
-        verdict = label
     return {"verdict": verdict, "confidence": score, "raw_label": result["label"]}
 
 

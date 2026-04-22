@@ -1,9 +1,11 @@
 import { WarningOctagon, SealCheck, ArrowSquareOut, Brain } from "@phosphor-icons/react";
+import DOMPurify from "dompurify";
 
 function inline(s) {
-  return s
+  const html = s
     .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
     .replace(/`(.+?)`/g, '<code class="bg-slate-100 px-1">$1</code>');
+  return DOMPurify.sanitize(html, { ALLOWED_TAGS: ["strong", "code"], ALLOWED_ATTR: ["class"] });
 }
 
 function ExplanationMarkdown({ text }) {
@@ -11,30 +13,31 @@ function ExplanationMarkdown({ text }) {
   const lines = text.split("\n").filter((l) => l.trim().length);
   const elements = [];
   let listBuffer = [];
-  const flushList = () => {
+  const flushList = (idx) => {
     if (listBuffer.length) {
+      const items = [...listBuffer];
       elements.push(
-        <ul key={`ul-${elements.length}`}>
-          {listBuffer.map((l, i) => (
-            <li key={i} dangerouslySetInnerHTML={{ __html: inline(l) }} />
+        <ul key={`ul-${idx}-${items.length}`}>
+          {items.map((l, i) => (
+            <li key={`li-${idx}-${i}-${l.slice(0, 20)}`} dangerouslySetInnerHTML={{ __html: inline(l) }} />
           ))}
         </ul>
       );
       listBuffer = [];
     }
   };
-  for (const raw of lines) {
+  lines.forEach((raw, idx) => {
     const line = raw.trim();
     if (/^[-*•]\s+/.test(line)) {
       listBuffer.push(line.replace(/^[-*•]\s+/, ""));
     } else {
-      flushList();
+      flushList(idx);
       elements.push(
-        <p key={`p-${elements.length}`} dangerouslySetInnerHTML={{ __html: inline(line) }} />
+        <p key={`p-${idx}-${line.slice(0, 20)}`} dangerouslySetInnerHTML={{ __html: inline(line) }} />
       );
     }
-  }
-  flushList();
+  });
+  flushList(lines.length);
   return <div className="ai-prose text-sm">{elements}</div>;
 }
 
