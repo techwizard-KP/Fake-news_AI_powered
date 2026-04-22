@@ -10,9 +10,9 @@ import re
 import html
 from pathlib import Path
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import List
 
-from pydantic import BaseModel, Field, ConfigDict, HttpUrl
+from pydantic import BaseModel, Field, ConfigDict
 import requests
 from bs4 import BeautifulSoup
 import feedparser
