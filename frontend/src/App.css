@@ -1,34 +1,67 @@
-.App-logo {
-    height: 40vmin;
-    pointer-events: none;
+.App {
+    font-family: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
 }
 
-@media (prefers-reduced-motion: no-preference) {
-    .App-logo {
-        animation: App-logo-spin infinite 20s linear;
-    }
+.font-chivo {
+    font-family: "Chivo", system-ui, sans-serif;
+    letter-spacing: -0.02em;
 }
 
-.App-header {
-    background-color: #0f0f10;
-    min-height: 100vh;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    font-size: calc(10px + 2vmin);
-    color: white;
+.font-mono-tech {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
 }
 
-.App-link {
-    color: #61dafb;
+/* Grid lines background */
+.bg-grid {
+    background-image:
+        linear-gradient(to right, rgba(15, 23, 42, 0.04) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(15, 23, 42, 0.04) 1px, transparent 1px);
+    background-size: 40px 40px;
 }
 
-@keyframes App-logo-spin {
-    from {
-        transform: rotate(0deg);
-    }
-    to {
-        transform: rotate(360deg);
-    }
+/* Confidence bar animation */
+@keyframes fillBar {
+    from { width: 0%; }
 }
+.confidence-fill {
+    animation: fillBar 0.9s ease-out;
+}
+
+/* Caret blink for brand */
+.caret::after {
+    content: "_";
+    animation: blink 1s steps(1) infinite;
+    margin-left: 4px;
+    color: #0f172a;
+}
+@keyframes blink {
+    50% { opacity: 0; }
+}
+
+/* Marquee */
+.marquee {
+    white-space: nowrap;
+    overflow: hidden;
+}
+.marquee__inner {
+    display: inline-block;
+    animation: marquee 40s linear infinite;
+    padding-left: 100%;
+}
+@keyframes marquee {
+    from { transform: translateX(0); }
+    to { transform: translateX(-100%); }
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: #f1f5f9; }
+::-webkit-scrollbar-thumb { background: #cbd5e1; }
+::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+/* Prose tweaks for explanation */
+.ai-prose ul { list-style: disc; margin-left: 1.25rem; }
+.ai-prose ol { list-style: decimal; margin-left: 1.25rem; }
+.ai-prose li { margin: 0.3rem 0; color: #334155; }
+.ai-prose strong { color: #0f172a; font-weight: 600; }
+.ai-prose p { margin: 0.5rem 0; color: #334155; }
