@@ -185,8 +185,9 @@ async def gemini_classify(title: str, body: str) -> dict:
 
 
 def combine_verdicts(bert: dict, gemini: dict) -> dict:
-    """Ensemble: if both agree, average confidence (boost). If disagree, trust Gemini
-    but lower the combined confidence. If Gemini unavailable, fall back to BERT."""
+    """Ensemble: if both agree, average confidence (boost). If disagree, return
+    an UNCERTAIN verdict and let the user judge from the model breakdown. If
+    Gemini unavailable, fall back to BERT alone."""
     g_v = gemini.get("verdict", "UNKNOWN")
     b_v = bert.get("verdict", "UNKNOWN")
     b_c = float(bert.get("confidence", 0.0))
@@ -195,8 +196,9 @@ def combine_verdicts(bert: dict, gemini: dict) -> dict:
         return {"verdict": b_v, "confidence": b_c, "agreement": False}
     if g_v == b_v:
         return {"verdict": b_v, "confidence": min(0.99, (b_c + g_c) / 2 + 0.05), "agreement": True}
-    # Disagreement: trust Gemini, penalize confidence
-    return {"verdict": g_v, "confidence": max(0.5, g_c * 0.85), "agreement": False}
+    # Disagreement: honest stance — don't pick a winner. Confidence = 1 - gap.
+    gap = abs(b_c - g_c)
+    return {"verdict": "UNCERTAIN", "confidence": max(0.3, 1.0 - gap), "agreement": False}
 
 
 # ----------------- MODELS -----------------
@@ -321,7 +323,8 @@ async def stats():
     total = await db.analyses.count_documents({})
     fake = await db.analyses.count_documents({"verdict": "FAKE"})
     real = await db.analyses.count_documents({"verdict": "REAL"})
-    return {"total": total, "fake": fake, "real": real}
+    uncertain = await db.analyses.count_documents({"verdict": "UNCERTAIN"})
+    return {"total": total, "fake": fake, "real": real, "uncertain": uncertain}
 
 
 @api_router.get("/trending", response_model=List[TrendingItem])

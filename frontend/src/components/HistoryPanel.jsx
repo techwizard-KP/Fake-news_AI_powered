@@ -3,6 +3,7 @@ import { ClockCounterClockwise, Trash, TrashSimple } from "@phosphor-icons/react
 function verdictBadge(v) {
   if (v === "FAKE") return "bg-red-50 text-red-700 border-red-300";
   if (v === "REAL") return "bg-emerald-50 text-emerald-700 border-emerald-300";
+  if (v === "UNCERTAIN") return "bg-amber-50 text-amber-700 border-amber-300";
   return "bg-slate-50 text-slate-700 border-slate-300";
 }
 

@@ -1,4 +1,4 @@
-import { WarningOctagon, SealCheck, ArrowSquareOut, Brain } from "@phosphor-icons/react";
+import { WarningOctagon, SealCheck, ArrowSquareOut, Brain, Scales } from "@phosphor-icons/react";
 import DOMPurify from "dompurify";
 
 function inline(s) {
@@ -43,20 +43,19 @@ function ExplanationMarkdown({ text }) {
 
 function ConfidenceBar({ verdict, confidence }) {
   const pct = Math.round((confidence || 0) * 100);
-  const isFake = verdict === "FAKE";
-  const fillColor = isFake ? "bg-red-500" : "bg-emerald-500";
+  const { color, bar } = VERDICT_STYLES[verdict] || VERDICT_STYLES.UNKNOWN;
   return (
     <div data-testid="confidence-bar">
       <div className="flex items-end justify-between mb-2">
         <span className="text-[10px] tracking-[0.3em] uppercase font-bold text-slate-500">
-          Model Confidence
+          {verdict === "UNCERTAIN" ? "Agreement Level" : "Model Confidence"}
         </span>
-        <span className={`font-chivo font-black text-2xl ${isFake ? "text-red-600" : "text-emerald-600"}`}>
+        <span className={`font-chivo font-black text-2xl ${color}`}>
           {pct}%
         </span>
       </div>
       <div className="h-3 bg-slate-100 border border-slate-300 relative overflow-hidden">
-        <div className={`h-full ${fillColor} confidence-fill`} style={{ width: `${pct}%` }} />
+        <div className={`h-full ${bar} confidence-fill`} style={{ width: `${pct}%` }} />
       </div>
       <div className="flex justify-between mt-1 text-[10px] tracking-[0.2em] uppercase text-slate-400 font-bold">
         <span>0</span><span>25</span><span>50</span><span>75</span><span>100</span>
@@ -68,6 +67,7 @@ function ConfidenceBar({ verdict, confidence }) {
 const VERDICT_STYLES = {
   FAKE: { color: "text-red-600", bar: "bg-red-500" },
   REAL: { color: "text-emerald-600", bar: "bg-emerald-500" },
+  UNCERTAIN: { color: "text-amber-600", bar: "bg-amber-500" },
   UNKNOWN: { color: "text-slate-500", bar: "bg-slate-300" },
 };
 
@@ -125,9 +125,34 @@ export default function ResultPanel({ result, loading }) {
     );
   }
 
-  const isFake = result.verdict === "FAKE";
-  const verdictBg = isFake ? "bg-red-50 border-red-300" : "bg-emerald-50 border-emerald-300";
-  const verdictText = isFake ? "text-red-700" : "text-emerald-700";
+  const v = result.verdict;
+  const isFake = v === "FAKE";
+  const isReal = v === "REAL";
+  const isUncertain = v === "UNCERTAIN";
+  let verdictBg = "bg-slate-50 border-slate-300";
+  let verdictText = "text-slate-700";
+  let verdictBorder = "border-slate-400";
+  let verdictIcon = <Brain size={30} weight="fill" className="text-slate-500" />;
+  let subCopy = "Verdict not available";
+  if (isFake) {
+    verdictBg = "bg-red-50 border-red-300";
+    verdictText = "text-red-700";
+    verdictBorder = "border-red-500";
+    verdictIcon = <WarningOctagon size={30} weight="fill" className="text-red-500" />;
+    subCopy = "Article shows signals of misinformation";
+  } else if (isReal) {
+    verdictBg = "bg-emerald-50 border-emerald-300";
+    verdictText = "text-emerald-700";
+    verdictBorder = "border-emerald-500";
+    verdictIcon = <SealCheck size={30} weight="fill" className="text-emerald-500" />;
+    subCopy = "Article appears to be genuine reporting";
+  } else if (isUncertain) {
+    verdictBg = "bg-amber-50 border-amber-300";
+    verdictText = "text-amber-700";
+    verdictBorder = "border-amber-500";
+    verdictIcon = <Scales size={30} weight="fill" className="text-amber-500" />;
+    subCopy = "Models disagreed · review both opinions below";
+  }
 
   return (
     <section className="border border-slate-300 bg-white" data-testid="result-panel">
@@ -148,12 +173,8 @@ export default function ResultPanel({ result, loading }) {
 
       <div className={`p-6 md:p-8 border-b-4 ${verdictBg}`}>
         <div className="flex items-start gap-4">
-          <div className={`w-14 h-14 flex items-center justify-center border-2 ${isFake ? "border-red-500 bg-white" : "border-emerald-500 bg-white"}`}>
-            {isFake ? (
-              <WarningOctagon size={30} weight="fill" className="text-red-500" />
-            ) : (
-              <SealCheck size={30} weight="fill" className="text-emerald-500" />
-            )}
+          <div className={`w-14 h-14 flex items-center justify-center border-2 ${verdictBorder} bg-white`}>
+            {verdictIcon}
           </div>
           <div className="flex-1">
             <div className={`text-[10px] tracking-[0.3em] uppercase font-bold ${verdictText}`}>
@@ -166,9 +187,7 @@ export default function ResultPanel({ result, loading }) {
               {result.verdict}
             </div>
             <div className="text-xs text-slate-500 mt-2 tracking-[0.15em] uppercase">
-              {isFake
-                ? "Article shows signals of misinformation"
-                : "Article appears to be genuine reporting"}
+              {subCopy}
             </div>
           </div>
         </div>
@@ -207,7 +226,7 @@ export default function ResultPanel({ result, loading }) {
           {result.agreement === false && (
             <div className="col-span-2 px-6 py-3 bg-amber-50 border-t border-amber-300 text-xs tracking-[0.15em] uppercase font-bold text-amber-800 flex items-center gap-2" data-testid="disagreement-banner">
               <span className="w-2 h-2 bg-amber-500 inline-block" />
-              Models disagreed · final verdict follows the second-opinion review
+              Models disagreed · read both verdicts and the explanation below to decide
             </div>
           )}
         </div>
