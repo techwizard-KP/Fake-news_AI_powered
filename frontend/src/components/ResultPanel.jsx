@@ -65,12 +65,15 @@ function ConfidenceBar({ verdict, confidence }) {
   );
 }
 
+const VERDICT_STYLES = {
+  FAKE: { color: "text-red-600", bar: "bg-red-500" },
+  REAL: { color: "text-emerald-600", bar: "bg-emerald-500" },
+  UNKNOWN: { color: "text-slate-500", bar: "bg-slate-300" },
+};
+
 function ModelCard({ label, verdict, confidence, reason, testid }) {
   const pct = Math.round((confidence || 0) * 100);
-  const isFake = verdict === "FAKE";
-  const isReal = verdict === "REAL";
-  const color = isFake ? "text-red-600" : isReal ? "text-emerald-600" : "text-slate-500";
-  const bar = isFake ? "bg-red-500" : isReal ? "bg-emerald-500" : "bg-slate-300";
+  const { color, bar } = VERDICT_STYLES[verdict] || VERDICT_STYLES.UNKNOWN;
   return (
     <div className="p-5" data-testid={testid}>
       <div className="text-[10px] tracking-[0.3em] uppercase font-bold text-slate-500">{label}</div>

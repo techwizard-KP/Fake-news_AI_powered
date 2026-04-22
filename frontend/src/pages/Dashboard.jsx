@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { api } from "@/lib/api";
+import { logger } from "@/lib/logger";
 import { toast } from "sonner";
 import Header from "@/components/Header";
 import Analyzer from "@/components/Analyzer";
@@ -20,7 +21,7 @@ export default function Dashboard() {
       const { data } = await api.get("/history");
       setHistory(data);
     } catch (e) {
-      console.error(e);
+      logger.error(e);
     }
   }, []);
 
@@ -29,7 +30,7 @@ export default function Dashboard() {
       const { data } = await api.get("/stats");
       setStats(data);
     } catch (e) {
-      console.error(e);
+      logger.error(e);
     }
   }, []);
 

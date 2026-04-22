@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
+import { logger } from "@/lib/logger";
 import { Newspaper, ArrowSquareOut, Lightning, ArrowClockwise } from "@phosphor-icons/react";
 
 const TOPICS = [
@@ -22,7 +23,7 @@ export default function TrendingNews({ onVerify }) {
       const { data } = await api.get(`/trending?topic=${t}`);
       setItems(data);
     } catch (e) {
-      console.error(e);
+      logger.error(e);
     } finally {
       setLoading(false);
     }
