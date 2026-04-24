@@ -188,6 +188,38 @@ BLOCK_PAGE_SIGNATURES = (
     "checking your browser",
 )
 
+# Established news outlets — Gemini cannot fact-check claims it has not seen
+# in training. For these sources, default the verdict to REAL unless the writing
+# itself is satirical or an opinion piece pretending to be reporting.
+TRUSTED_NEWS_DOMAINS = {
+    "apnews.com", "reuters.com", "bbc.com", "bbc.co.uk", "nytimes.com",
+    "washingtonpost.com", "wsj.com", "ft.com", "bloomberg.com", "npr.org",
+    "theguardian.com", "afp.com", "aljazeera.com", "cnn.com", "abcnews.go.com",
+    "nbcnews.com", "cbsnews.com", "pbs.org", "economist.com", "time.com",
+    "politico.com", "axios.com", "thehill.com", "usatoday.com", "latimes.com",
+    "dw.com", "france24.com", "euronews.com", "cnbc.com", "forbes.com",
+    "techcrunch.com", "theverge.com", "wired.com", "arstechnica.com",
+    "nature.com", "science.org", "scientificamerican.com", "newscientist.com",
+    "nasa.gov", "noaa.gov", "who.int", "cdc.gov", "un.org",
+}
+
+# Known satire / parody outlets — always flag as FAKE for a news-detector context
+SATIRE_DOMAINS = {
+    "theonion.com", "babylonbee.com", "clickhole.com", "reductress.com",
+    "thehardtimes.net", "dailymash.co.uk", "thebeaverton.com",
+}
+
+
+def _domain_of(url: str) -> str:
+    try:
+        from urllib.parse import urlparse
+        host = urlparse(url).netloc.lower().lstrip("www.")
+        if host.startswith("www."):
+            host = host[4:]
+        return host
+    except Exception:
+        return ""
+
 
 def _looks_like_block_page(parsed: dict) -> bool:
     blob = f"{parsed.get('title','')} {parsed.get('body','')[:600]}".lower()
@@ -259,7 +291,7 @@ async def get_explanation(title: str, body: str, verdict: str, confidence: float
 
 
 # ----------------- GEMINI SECOND-OPINION CLASSIFIER -----------------
-async def gemini_classify(title: str, body: str) -> dict:
+async def gemini_classify(title: str, body: str, source_domain: str = "") -> dict:
     """Independent verdict from Gemini. Returns {verdict, confidence, reason}."""
     fallback = {"verdict": "UNKNOWN", "confidence": 0.0, "reason": "Unavailable"}
     try:
@@ -267,24 +299,54 @@ async def gemini_classify(title: str, body: str) -> dict:
         key = os.environ.get("EMERGENT_LLM_KEY")
         if not key:
             return fallback
+        today = datetime.now(timezone.utc).strftime("%B %Y")
+        is_trusted = source_domain in TRUSTED_NEWS_DOMAINS
+        is_satire = source_domain in SATIRE_DOMAINS
+        source_note = ""
+        if is_satire:
+            source_note = (
+                f"\n\nIMPORTANT: This article is from {source_domain}, a known "
+                "satire / parody outlet. For a fake-news detector, satire counts "
+                "as FAKE. Classify FAKE.\n"
+            )
+        elif is_trusted:
+            source_note = (
+                f"\n\nIMPORTANT: This article is from {source_domain}, an established "
+                "newswire / mainstream outlet. Such outlets have editorial standards "
+                "and corrections processes. Do NOT classify it FAKE because you "
+                "cannot personally verify the facts; you have no live web access. "
+                "Classify FAKE only if the writing itself is clearly satirical, "
+                "opinion presented as news, or shows obvious fabrication patterns. "
+                "Otherwise, classify REAL.\n"
+            )
         chat = LlmChat(
             api_key=key,
             session_id=f"cls-{uuid.uuid4()}",
             system_message=(
-                "You are a senior fact-checker classifying news articles. Use a "
-                "REAL-leaning prior: if the article reads like genuine reporting "
-                "from a recognizable outlet, has plausible names/dates/quotes, and "
-                "lacks obvious red flags, classify it REAL. Classify it FAKE only "
-                "when there are CLEAR signs of misinformation (fabricated facts, "
-                "conspiracy claims with no sourcing, satire posing as news, "
-                "manipulated statistics, impossible events, or articles from "
-                "known-fake outlets). When uncertain between the two, choose REAL.\n\n"
+                f"Today's date is {today}. Your training data may end earlier than "
+                f"this — you MUST NOT flag an article as FAKE simply because it "
+                f"reports recent events, names recent officials, or cites dates "
+                f"after your knowledge cutoff. Treat news from {today} as current."
+                + source_note
+                + "\n\nYou are a senior fact-checker classifying news articles. "
+                "Use a REAL-leaning prior: if the article reads like genuine "
+                "reporting from a recognizable outlet, has plausible "
+                "names/dates/quotes, attributes claims to sources, and lacks "
+                "obvious red flags, classify it REAL. Classify it FAKE only when "
+                "there are CLEAR signs of misinformation: fabricated facts "
+                "presented without sourcing, conspiracy claims, satire posing as "
+                "news, manipulated statistics, physically impossible events, or "
+                "articles from known-fake outlets. Recency, unfamiliar names, or "
+                "events you do not recognise are NOT grounds for FAKE.\n\n"
+                "When uncertain between the two, choose REAL.\n\n"
                 "Return STRICT JSON only, no prose, no markdown fences:\n"
                 '{"verdict": "REAL" | "FAKE", "confidence": <float 0..1>, '
                 '"reason": "<one short sentence>"}'
             ),
         ).with_model("gemini", "gemini-2.5-flash")
-        prompt = f"Title: {title}\n\nArticle:\n{body[:3500]}"
+        prompt = (
+            f"Source: {source_domain or 'unknown'}\nTitle: {title}\n\nArticle:\n{body[:3500]}"
+        )
         reply = await chat.send_message(UserMessage(text=prompt))
         raw = str(reply).strip()
         # Strip code fences if present
@@ -391,7 +453,7 @@ async def analyze(req: AnalyzeRequest):
         logger.exception("Classification failed")
         raise HTTPException(status_code=500, detail=f"Classification failed: {e}")
 
-    gemini_cls = await gemini_classify(article["title"], article["body"])
+    gemini_cls = await gemini_classify(article["title"], article["body"], _domain_of(url))
     final = combine_verdicts(bert_cls, gemini_cls)
     explanation = await get_explanation(article["title"], article["body"], final["verdict"], final["confidence"])
 

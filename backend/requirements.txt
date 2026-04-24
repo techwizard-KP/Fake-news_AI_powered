@@ -10,6 +10,7 @@ beautifulsoup4==4.14.3
 black==26.3.1
 boto3==1.42.86
 botocore==1.42.86
+brotli==1.2.0
 certifi==2026.2.25
 cffi==2.0.0
 charset-normalizer==3.4.7
@@ -35,6 +36,7 @@ google-auth-httplib2==0.3.1
 google-genai==1.71.0
 google-generativeai==0.8.6
 googleapis-common-protos==1.74.0
+googlenewsdecoder==0.1.7
 grpcio==1.80.0
 grpcio-status==1.71.2
 h11==0.16.0
@@ -90,6 +92,7 @@ Pygments==2.20.0
 PyJWT==2.12.1
 pymongo==4.5.0
 pyparsing==3.3.2
+PySocks==1.7.1
 pytest==9.0.3
 python-dateutil==2.9.0.post0
 python-dotenv==1.2.2
@@ -107,6 +110,7 @@ rsa==4.9.1
 s3transfer==0.16.0
 s5cmd==0.2.0
 safetensors==0.7.0
+selectolax==0.4.7
 sgmllib3k==1.0.0
 shellingham==1.5.4
 six==1.17.0
