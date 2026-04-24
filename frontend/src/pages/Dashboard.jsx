@@ -19,9 +19,16 @@ export default function Dashboard() {
   const resultRef = useRef(null);
 
   const scrollToResult = () => {
-    setTimeout(() => {
-      resultRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-    }, 80);
+    // Use rAF + small delay so the DOM has rendered the new loading/result state
+    requestAnimationFrame(() => {
+      setTimeout(() => {
+        const node = resultRef.current;
+        if (!node) return;
+        const rect = node.getBoundingClientRect();
+        const absoluteTop = window.scrollY + rect.top - 80;
+        window.scrollTo({ top: absoluteTop, behavior: "smooth" });
+      }, 50);
+    });
   };
 
   const loadHistory = useCallback(async () => {
@@ -107,7 +114,9 @@ export default function Dashboard() {
               urlInput={urlInput}
               setUrlInput={setUrlInput}
             />
-            <ResultPanel ref={resultRef} result={result} loading={loading} />
+            <div ref={resultRef} style={{ scrollMarginTop: 90 }}>
+              <ResultPanel result={result} loading={loading} />
+            </div>
             {result?.id && <ChatPanel analysisId={result.id} verdict={result.verdict} />}
           </div>
           <div className="lg:col-span-2">
