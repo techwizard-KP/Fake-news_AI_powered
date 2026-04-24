@@ -271,12 +271,17 @@ async def gemini_classify(title: str, body: str) -> dict:
             api_key=key,
             session_id=f"cls-{uuid.uuid4()}",
             system_message=(
-                "You are a rigorous fact-checking classifier. Given a news article, classify "
-                "it as REAL (genuine reporting, plausible sourcing, factually grounded) or FAKE "
-                "(misinformation, fabrication, heavy bias, unverifiable claims, satire "
-                "presented as news). Return STRICT JSON only, no prose, no markdown fences, in "
-                'the form: {"verdict": "REAL" | "FAKE", "confidence": <float 0..1>, "reason": '
-                '"<one short sentence>"}.'
+                "You are a senior fact-checker classifying news articles. Use a "
+                "REAL-leaning prior: if the article reads like genuine reporting "
+                "from a recognizable outlet, has plausible names/dates/quotes, and "
+                "lacks obvious red flags, classify it REAL. Classify it FAKE only "
+                "when there are CLEAR signs of misinformation (fabricated facts, "
+                "conspiracy claims with no sourcing, satire posing as news, "
+                "manipulated statistics, impossible events, or articles from "
+                "known-fake outlets). When uncertain between the two, choose REAL.\n\n"
+                "Return STRICT JSON only, no prose, no markdown fences:\n"
+                '{"verdict": "REAL" | "FAKE", "confidence": <float 0..1>, '
+                '"reason": "<one short sentence>"}'
             ),
         ).with_model("gemini", "gemini-2.5-flash")
         prompt = f"Title: {title}\n\nArticle:\n{body[:3500]}"
@@ -305,20 +310,17 @@ async def gemini_classify(title: str, body: str) -> dict:
 
 
 def combine_verdicts(bert: dict, gemini: dict) -> dict:
-    """Ensemble: if both agree, average confidence (boost). If disagree, return
-    an UNCERTAIN verdict and let the user judge from the model breakdown. If
-    Gemini unavailable, fall back to BERT alone."""
+    """Gemini is the primary classifier (much more accurate on modern news).
+    BERT is kept as a secondary informational signal. Final verdict = Gemini's
+    verdict whenever Gemini is available; BERT is only used if Gemini fails."""
     g_v = gemini.get("verdict", "UNKNOWN")
     b_v = bert.get("verdict", "UNKNOWN")
     b_c = float(bert.get("confidence", 0.0))
     g_c = float(gemini.get("confidence", 0.0))
-    if g_v == "UNKNOWN":
-        return {"verdict": b_v, "confidence": b_c, "agreement": False}
-    if g_v == b_v:
-        return {"verdict": b_v, "confidence": min(0.99, (b_c + g_c) / 2 + 0.05), "agreement": True}
-    # Disagreement: honest stance — don't pick a winner. Confidence = 1 - gap.
-    gap = abs(b_c - g_c)
-    return {"verdict": "UNCERTAIN", "confidence": max(0.3, 1.0 - gap), "agreement": False}
+    if g_v in ("REAL", "FAKE"):
+        return {"verdict": g_v, "confidence": g_c, "agreement": (g_v == b_v)}
+    # Gemini unavailable -> fall back to BERT
+    return {"verdict": b_v, "confidence": b_c, "agreement": False}
 
 
 # ----------------- MODELS -----------------

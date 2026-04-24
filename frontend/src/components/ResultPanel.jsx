@@ -211,13 +211,13 @@ export default function ResultPanel({ result, loading }) {
       {(result.bert_verdict || result.gemini_verdict) && (
         <div className="border-b border-slate-300 grid grid-cols-2 divide-x divide-slate-300" data-testid="model-breakdown">
           <ModelCard
-            label="BERT · RoBERTa"
+            label="BERT · RoBERTa (secondary)"
             verdict={result.bert_verdict}
             confidence={result.bert_confidence}
             testid="bert-card"
           />
           <ModelCard
-            label="Gemini · 2.5 Flash"
+            label="Gemini · 2.5 Flash (primary)"
             verdict={result.gemini_verdict}
             confidence={result.gemini_confidence}
             reason={result.gemini_reason}
@@ -226,7 +226,7 @@ export default function ResultPanel({ result, loading }) {
           {result.agreement === false && (
             <div className="col-span-2 px-6 py-3 bg-amber-50 border-t border-amber-300 text-xs tracking-[0.15em] uppercase font-bold text-amber-800 flex items-center gap-2" data-testid="disagreement-banner">
               <span className="w-2 h-2 bg-amber-500 inline-block" />
-              Models disagreed · read both verdicts and the explanation below to decide
+              BERT (legacy 2017 dataset) disagreed · Gemini verdict was used
             </div>
           )}
         </div>

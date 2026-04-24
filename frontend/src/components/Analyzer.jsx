@@ -41,10 +41,11 @@ export default function Analyzer({ onAnalyze, loading, urlInput, setUrlInput }) 
           <span className="text-slate-400">In two seconds.</span>
         </h1>
         <p className="mt-4 text-slate-600 max-w-2xl">
-          Paste any news article URL. A fine-tuned <strong className="text-slate-900">RoBERTa</strong> classifier
-          runs alongside a <strong className="text-slate-900">Gemini</strong> second-opinion reviewer. Together they
-          deliver a verdict of <strong className="text-emerald-700">REAL</strong> or{" "}
-          <strong className="text-red-700">FAKE</strong> with a forensic explanation.
+          Paste any news article URL. A <strong className="text-slate-900">Gemini</strong> fact-checker
+          delivers the primary verdict — <strong className="text-emerald-700">REAL</strong> or{" "}
+          <strong className="text-red-700">FAKE</strong> — backed by a fine-tuned{" "}
+          <strong className="text-slate-900">RoBERTa</strong> BERT classifier as a secondary signal,
+          plus a forensic explanation.
         </p>
 
         <form onSubmit={submit} className="mt-8 grid grid-cols-1 md:grid-cols-[1fr_auto] gap-3">
