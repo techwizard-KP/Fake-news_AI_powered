@@ -397,6 +397,7 @@ class AnalysisItem(BaseModel):
     title: str
     description: str = ""
     image: str = ""
+    body: str = ""
     verdict: str
     confidence: float
     explanation: str = ""
@@ -415,6 +416,21 @@ class TrendingItem(BaseModel):
     source: str = ""
     published: str = ""
     description: str = ""
+
+
+class ChatMessage(BaseModel):
+    role: str  # "user" | "assistant"
+    content: str
+
+
+class ChatRequest(BaseModel):
+    analysis_id: str
+    question: str
+    history: List[ChatMessage] = Field(default_factory=list)
+
+
+class ChatResponse(BaseModel):
+    answer: str
 
 
 # ----------------- ROUTES -----------------
@@ -462,6 +478,7 @@ async def analyze(req: AnalyzeRequest):
         title=article["title"],
         description=article["description"],
         image=article["image"],
+        body=article["body"][:8000],
         verdict=final["verdict"],
         confidence=final["confidence"],
         explanation=explanation,
@@ -476,6 +493,86 @@ async def analyze(req: AnalyzeRequest):
     doc["created_at"] = doc["created_at"].isoformat()
     await db.analyses.insert_one(doc)
     return item
+
+
+@api_router.post("/chat", response_model=ChatResponse)
+async def chat_about_article(req: ChatRequest):
+    """Conversational Q&A about a previously-analyzed article. Gemini answers
+    using the article content + its general knowledge, regardless of whether
+    the article was classified REAL or FAKE."""
+    doc = await db.analyses.find_one({"id": req.analysis_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Analysis not found")
+    question = (req.question or "").strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="Question is empty")
+
+    try:
+        from emergentintegrations.llm.chat import LlmChat, UserMessage
+        key = os.environ.get("EMERGENT_LLM_KEY")
+        if not key:
+            raise RuntimeError("Missing LLM key")
+        today = datetime.now(timezone.utc).strftime("%B %Y")
+        verdict = doc.get("verdict", "UNKNOWN")
+        body = (doc.get("body") or "")[:5000]
+        title = doc.get("title", "")
+        url = doc.get("url", "")
+        domain = _domain_of(url)
+
+        system_msg = (
+            f"Today is {today}. You are a thoughtful research assistant helping "
+            "a user understand a news article they just analyzed. You have access "
+            "to: (1) the article excerpt, (2) the source domain, (3) the system's "
+            "fake-news verdict on it. Answer the user's question clearly and "
+            "honestly, drawing on both the article content and your general "
+            "knowledge.\n\n"
+            "RULES:\n"
+            "- Give straight, balanced answers — do NOT keep repeating the verdict.\n"
+            "- If the question is factual and you don't know, say so plainly; do "
+            "  not fabricate.\n"
+            "- Distinguish what is IN THE ARTICLE vs. what is YOUR OWN context.\n"
+            "- If the article was classified FAKE, you can still answer factual "
+            "  questions about the topic from your own knowledge.\n"
+            "- Use markdown for clarity (short paragraphs, bullets when helpful).\n"
+            "- Keep answers concise (3–6 sentences unless more is genuinely needed)."
+        )
+
+        # Build a session id stable per-analysis so emergentintegrations can
+        # carry context within a single chat thread if the library supports it.
+        session_id = f"chat-{req.analysis_id}"
+        chat = LlmChat(
+            api_key=key,
+            session_id=session_id,
+            system_message=system_msg,
+        ).with_model("gemini", "gemini-2.5-flash")
+
+        # Compose the prompt: article context + recent history + new question
+        history_lines = []
+        for msg in req.history[-8:]:
+            tag = "User" if msg.role == "user" else "Assistant"
+            history_lines.append(f"{tag}: {msg.content}")
+        history_block = "\n".join(history_lines)
+
+        prompt = (
+            f"ARTICLE CONTEXT\n"
+            f"---------------\n"
+            f"Source domain: {domain or 'unknown'}\n"
+            f"URL: {url}\n"
+            f"Title: {title}\n"
+            f"System verdict: {verdict} (confidence "
+            f"{float(doc.get('confidence', 0)) * 100:.0f}%)\n\n"
+            f"Article excerpt:\n{body}\n\n"
+            + (f"PRIOR CONVERSATION\n------------------\n{history_block}\n\n" if history_block else "")
+            + f"USER QUESTION\n-------------\n{question}\n"
+        )
+
+        reply = await chat.send_message(UserMessage(text=prompt))
+        return ChatResponse(answer=str(reply).strip())
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Chat failed")
+        raise HTTPException(status_code=500, detail=f"Chat error: {e}")
 
 
 @api_router.get("/history", response_model=List[AnalysisItem])

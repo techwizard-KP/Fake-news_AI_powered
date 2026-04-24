@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import Header from "@/components/Header";
 import Analyzer from "@/components/Analyzer";
 import ResultPanel from "@/components/ResultPanel";
+import ChatPanel from "@/components/ChatPanel";
 import TrendingNews from "@/components/TrendingNews";
 import HistoryPanel from "@/components/HistoryPanel";
 import StatsBar from "@/components/StatsBar";
@@ -98,6 +99,7 @@ export default function Dashboard() {
               setUrlInput={setUrlInput}
             />
             <ResultPanel result={result} loading={loading} />
+            {result?.id && <ChatPanel analysisId={result.id} />}
           </div>
           <div className="lg:col-span-2">
             <TrendingNews
