@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { api } from "@/lib/api";
 import { logger } from "@/lib/logger";
 import { toast } from "sonner";
@@ -16,6 +16,13 @@ export default function Dashboard() {
   const [history, setHistory] = useState([]);
   const [stats, setStats] = useState({ total: 0, fake: 0, real: 0 });
   const [urlInput, setUrlInput] = useState("");
+  const resultRef = useRef(null);
+
+  const scrollToResult = () => {
+    setTimeout(() => {
+      resultRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 80);
+  };
 
   const loadHistory = useCallback(async () => {
     try {
@@ -43,12 +50,14 @@ export default function Dashboard() {
   const analyze = async (url) => {
     setLoading(true);
     setResult(null);
+    scrollToResult();
     try {
       const { data } = await api.post("/analyze", { url });
       setResult(data);
       toast.success(`Classified as ${data.verdict}`);
       loadHistory();
       loadStats();
+      scrollToResult();
     } catch (e) {
       const msg = e?.response?.data?.detail || e.message || "Analysis failed";
       toast.error(msg);
@@ -59,7 +68,7 @@ export default function Dashboard() {
 
   const selectHistoryItem = (item) => {
     setResult(item);
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    scrollToResult();
   };
 
   const deleteItem = async (id) => {
@@ -98,8 +107,8 @@ export default function Dashboard() {
               urlInput={urlInput}
               setUrlInput={setUrlInput}
             />
-            <ResultPanel result={result} loading={loading} />
-            {result?.id && <ChatPanel analysisId={result.id} />}
+            <ResultPanel ref={resultRef} result={result} loading={loading} />
+            {result?.id && <ChatPanel analysisId={result.id} verdict={result.verdict} />}
           </div>
           <div className="lg:col-span-2">
             <TrendingNews

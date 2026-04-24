@@ -1,18 +1,37 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
-import { ChatCircleText, PaperPlaneTilt, CircleNotch, User, Sparkle } from "@phosphor-icons/react";
+import { ChatCircleText, PaperPlaneTilt, CircleNotch, User, Sparkle, Trash } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import DOMPurify from "dompurify";
 
-const SUGGESTED = [
-  "What is the main claim of this article?",
-  "Is this event widely reported elsewhere?",
-  "What context is missing from this story?",
-  "Who would benefit from this narrative?",
-];
+const SUGGESTIONS_BY_VERDICT = {
+  REAL: [
+    "What is the main claim of this article?",
+    "Is this story being reported by other major outlets?",
+    "What context is missing from this story?",
+    "What are the broader implications?",
+  ],
+  FAKE: [
+    "Why might this article be considered misleading?",
+    "What facts in this article can actually be verified?",
+    "What is the truth about this topic?",
+    "Who would benefit from spreading this narrative?",
+  ],
+  UNCERTAIN: [
+    "Why did the models disagree on this article?",
+    "What signals point to this being real or fake?",
+    "What sources should I cross-check?",
+    "Summarize the article in plain language",
+  ],
+  DEFAULT: [
+    "What is the main claim of this article?",
+    "Is this event widely reported elsewhere?",
+    "What context is missing from this story?",
+    "Who would benefit from this narrative?",
+  ],
+};
 
 function renderMarkdown(text) {
-  // Minimal markdown -> safe HTML
   let html = text
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
@@ -22,21 +41,36 @@ function renderMarkdown(text) {
     .replace(/`(.+?)`/g, '<code class="bg-slate-100 px-1 rounded">$1</code>')
     .replace(/\n{2,}/g, "<br/><br/>")
     .replace(/\n/g, "<br/>");
-  // Bullets
   html = html.replace(/(?:^|<br\/>)\s*[-*]\s+([^<]+)/g, "<br/>• $1");
   return DOMPurify.sanitize(html, { ALLOWED_TAGS: ["strong", "em", "code", "br"] });
 }
 
-export default function ChatPanel({ analysisId }) {
+export default function ChatPanel({ analysisId, verdict }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(false);
   const scrollRef = useRef(null);
 
-  // Reset chat when analysis changes
+  // Load persisted chat history when analysis changes
   useEffect(() => {
+    let cancelled = false;
     setMessages([]);
     setInput("");
+    if (!analysisId) return;
+    setHistoryLoading(true);
+    api
+      .get(`/chat/${analysisId}`)
+      .then(({ data }) => {
+        if (!cancelled) setMessages(data || []);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setHistoryLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [analysisId]);
 
   useEffect(() => {
@@ -76,27 +110,57 @@ export default function ChatPanel({ analysisId }) {
     }
   };
 
+  const clearChat = async () => {
+    if (!analysisId) return;
+    try {
+      await api.delete(`/chat/${analysisId}`);
+      setMessages([]);
+      toast.success("Chat cleared");
+    } catch {
+      toast.error("Could not clear chat");
+    }
+  };
+
+  const suggestions = SUGGESTIONS_BY_VERDICT[verdict] || SUGGESTIONS_BY_VERDICT.DEFAULT;
+
   return (
     <section className="border border-slate-300 bg-white" data-testid="chat-panel">
-      <div className="border-b border-slate-300 px-5 py-3 flex items-center gap-2 text-xs tracking-[0.25em] uppercase font-bold text-slate-600">
-        <ChatCircleText size={14} weight="bold" />
-        04 · Ask About This Article
+      <div className="border-b border-slate-300 px-5 py-3 flex items-center justify-between">
+        <div className="flex items-center gap-2 text-xs tracking-[0.25em] uppercase font-bold text-slate-600">
+          <ChatCircleText size={14} weight="bold" />
+          04 · Ask About This Article
+        </div>
+        {messages.length > 0 && (
+          <button
+            onClick={clearChat}
+            className="flex items-center gap-1 text-[10px] tracking-[0.2em] uppercase font-bold text-slate-500 hover:text-red-600 transition-colors"
+            data-testid="clear-chat-button"
+          >
+            <Trash size={12} /> Clear
+          </button>
+        )}
       </div>
 
-      <div ref={scrollRef} className="max-h-[420px] overflow-y-auto px-6 py-5 space-y-4 bg-slate-50/50">
-        {messages.length === 0 && !loading && (
+      <div ref={scrollRef} className="max-h-[440px] overflow-y-auto px-6 py-5 space-y-4 bg-slate-50/50">
+        {historyLoading && (
+          <div className="text-center text-xs text-slate-400 tracking-[0.2em] uppercase font-bold">
+            Loading chat history…
+          </div>
+        )}
+
+        {!historyLoading && messages.length === 0 && !loading && (
           <div className="text-center py-6">
             <Sparkle size={28} className="mx-auto text-slate-300" />
             <p className="text-sm text-slate-500 mt-3">
               Ask anything about this article — facts, context, or the verdict.
             </p>
             <div className="flex flex-wrap gap-2 justify-center mt-4">
-              {SUGGESTED.map((s) => (
+              {suggestions.map((s) => (
                 <button
                   key={s}
                   onClick={() => send(s)}
-                  className="text-xs border border-slate-300 bg-white px-3 py-1.5 hover:border-slate-900 hover:bg-slate-900 hover:text-white transition-colors text-left max-w-[260px]"
-                  data-testid={`suggested-${s.slice(0, 20)}`}
+                  className="text-xs border border-slate-300 bg-white px-3 py-1.5 hover:border-slate-900 hover:bg-slate-900 hover:text-white transition-colors text-left max-w-[280px]"
+                  data-testid={`suggested-${s.slice(0, 24)}`}
                 >
                   {s}
                 </button>

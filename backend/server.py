@@ -567,12 +567,48 @@ async def chat_about_article(req: ChatRequest):
         )
 
         reply = await chat.send_message(UserMessage(text=prompt))
-        return ChatResponse(answer=str(reply).strip())
+        answer = str(reply).strip()
+
+        # Persist user + assistant messages (TTL index expires them after 30 days)
+        now = datetime.now(timezone.utc)
+        await db.chat_messages.insert_many([
+            {
+                "id": str(uuid.uuid4()),
+                "analysis_id": req.analysis_id,
+                "role": "user",
+                "content": question,
+                "created_at": now,
+            },
+            {
+                "id": str(uuid.uuid4()),
+                "analysis_id": req.analysis_id,
+                "role": "assistant",
+                "content": answer,
+                "created_at": now,
+            },
+        ])
+        return ChatResponse(answer=answer)
     except HTTPException:
         raise
     except Exception as e:
         logger.exception("Chat failed")
         raise HTTPException(status_code=500, detail=f"Chat error: {e}")
+
+
+@api_router.get("/chat/{analysis_id}", response_model=List[ChatMessage])
+async def get_chat_history(analysis_id: str):
+    """Return persisted chat history for an analysis (auto-expires after 30 days)."""
+    cursor = db.chat_messages.find(
+        {"analysis_id": analysis_id}, {"_id": 0, "role": 1, "content": 1, "created_at": 1}
+    ).sort("created_at", 1)
+    docs = await cursor.to_list(length=200)
+    return [ChatMessage(role=d["role"], content=d["content"]) for d in docs]
+
+
+@api_router.delete("/chat/{analysis_id}")
+async def clear_chat_history(analysis_id: str):
+    res = await db.chat_messages.delete_many({"analysis_id": analysis_id})
+    return {"ok": True, "deleted": res.deleted_count}
 
 
 @api_router.get("/history", response_model=List[AnalysisItem])
@@ -593,12 +629,14 @@ async def delete_history(item_id: str):
     res = await db.analyses.delete_one({"id": item_id})
     if res.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Not found")
+    await db.chat_messages.delete_many({"analysis_id": item_id})
     return {"ok": True}
 
 
 @api_router.delete("/history")
 async def clear_history():
     await db.analyses.delete_many({})
+    await db.chat_messages.delete_many({})
     return {"ok": True}
 
 
@@ -676,6 +714,15 @@ async def startup_event():
         except Exception as e:
             logger.exception(f"Model warm load failed: {e}")
     threading.Thread(target=_warm, daemon=True).start()
+
+    # TTL index — chat messages auto-expire 30 days after creation
+    try:
+        await db.chat_messages.create_index(
+            "created_at", expireAfterSeconds=60 * 60 * 24 * 30
+        )
+        await db.chat_messages.create_index("analysis_id")
+    except Exception as e:
+        logger.warning(f"Index creation failed: {e}")
 
 
 @app.on_event("shutdown")

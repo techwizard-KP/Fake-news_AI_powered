@@ -1,5 +1,8 @@
-import { WarningOctagon, SealCheck, ArrowSquareOut, Brain, Scales } from "@phosphor-icons/react";
+import { useRef, forwardRef } from "react";
+import { WarningOctagon, SealCheck, ArrowSquareOut, Brain, Scales, FilePdf, ImageSquare } from "@phosphor-icons/react";
 import DOMPurify from "dompurify";
+import { downloadPdf, downloadPng } from "@/lib/exportCard";
+import { toast } from "sonner";
 
 function inline(s) {
   const html = s
@@ -89,7 +92,46 @@ function ModelCard({ label, verdict, confidence, reason, testid }) {
   );
 }
 
-export default function ResultPanel({ result, loading }) {
+function ExportButtons({ cardRef, title }) {
+  const safeName = (title || "verdict").replace(/[^a-z0-9-_]+/gi, "_").slice(0, 60);
+  const handle = async (kind) => {
+    if (!cardRef.current) return;
+    try {
+      if (kind === "pdf") {
+        await downloadPdf(cardRef.current, `${safeName}_verdict.pdf`);
+        toast.success("PDF downloaded");
+      } else {
+        await downloadPng(cardRef.current, `${safeName}_verdict.png`);
+        toast.success("Image downloaded");
+      }
+    } catch {
+      toast.error("Export failed");
+    }
+  };
+  return (
+    <div className="flex items-center gap-1">
+      <button
+        onClick={() => handle("png")}
+        className="text-[10px] tracking-[0.2em] uppercase font-bold text-slate-600 hover:text-slate-900 border border-slate-300 hover:border-slate-900 px-2.5 py-1 flex items-center gap-1 transition-colors"
+        data-testid="export-png-button"
+        title="Download as PNG"
+      >
+        <ImageSquare size={12} weight="bold" /> PNG
+      </button>
+      <button
+        onClick={() => handle("pdf")}
+        className="text-[10px] tracking-[0.2em] uppercase font-bold text-slate-600 hover:text-slate-900 border border-slate-300 hover:border-slate-900 px-2.5 py-1 flex items-center gap-1 transition-colors"
+        data-testid="export-pdf-button"
+        title="Download as PDF"
+      >
+        <FilePdf size={12} weight="bold" /> PDF
+      </button>
+    </div>
+  );
+}
+
+const ResultPanel = forwardRef(function ResultPanel({ result, loading }, ref) {
+  const cardRef = useRef(null);
   if (loading) {
     return (
       <section className="border border-slate-300 bg-white" data-testid="result-loading">
@@ -155,21 +197,27 @@ export default function ResultPanel({ result, loading }) {
   }
 
   return (
-    <section className="border border-slate-300 bg-white" data-testid="result-panel">
-      <div className="border-b border-slate-300 px-5 py-3 flex items-center justify-between">
+    <section ref={ref} className="border border-slate-300 bg-white" data-testid="result-panel">
+      <div className="border-b border-slate-300 px-5 py-3 flex items-center justify-between gap-3 flex-wrap">
         <div className="text-xs tracking-[0.25em] uppercase font-bold text-slate-600">
           02 · Classification Result
         </div>
-        <a
-          href={result.url}
-          target="_blank"
-          rel="noreferrer"
-          className="text-xs tracking-[0.2em] uppercase text-slate-600 hover:text-slate-900 flex items-center gap-1"
-          data-testid="source-link"
-        >
-          Source <ArrowSquareOut size={12} />
-        </a>
+        <div className="flex items-center gap-3">
+          <ExportButtons cardRef={cardRef} title={result.title} />
+          <a
+            href={result.url}
+            target="_blank"
+            rel="noreferrer"
+            className="text-xs tracking-[0.2em] uppercase text-slate-600 hover:text-slate-900 flex items-center gap-1"
+            data-testid="source-link"
+          >
+            Source <ArrowSquareOut size={12} />
+          </a>
+        </div>
       </div>
+
+      {/* Captured area for PDF/PNG export */}
+      <div ref={cardRef}>
 
       <div className={`p-6 md:p-8 border-b-4 ${verdictBg}`}>
         <div className="flex items-start gap-4">
@@ -243,6 +291,9 @@ export default function ResultPanel({ result, loading }) {
           <ExplanationMarkdown text={result.explanation} />
         </div>
       </div>
+      </div>{/* /cardRef */}
     </section>
   );
-}
+});
+
+export default ResultPanel;
