@@ -1,6 +1,9 @@
+from dotenv import load_dotenv
+load_dotenv()
 from fastapi import FastAPI, APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
-from dotenv import load_dotenv
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
@@ -11,33 +14,50 @@ import html
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import List
+import certifi
 
 from pydantic import BaseModel, Field, ConfigDict
 import requests
 from bs4 import BeautifulSoup
 import feedparser
 from googlenewsdecoder import gnewsdecoder
+import google.generativeai as genai
+from newspaper import Article
+import asyncio
+# ---------- Environment and MongoDB ----------
+env_path = Path(__file__).resolve().parent / ".env"
+load_dotenv(dotenv_path=env_path)
 
-ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
+mongo_url = os.getenv("MONGO_URL")
+db_name = os.getenv("DB_NAME")
+gemini_api_key = os.getenv("GEMINI_API_KEY")
 
-# MongoDB connection
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+if not mongo_url:
+    raise Exception("MONGO_URL not found in environment variables")
+if not db_name:
+    raise Exception("DB_NAME not found in environment variables")
+if not gemini_api_key:
+    raise Exception("GEMINI_API_KEY not found in environment variables")
 
+client = AsyncIOMotorClient(mongo_url, tlsCAFile=certifi.where())
+db = client[db_name]
+
+# ---------- FastAPI app ----------
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
+
+# ---------- Serve React static files (if built) ----------
+#frontend_build_path = Path(__file__).parent.parent / "frontend" / "build"
+#if frontend_build_path.exists():
+    #app.mount("/static", StaticFiles(directory=frontend_build_path / "static"), name="static")
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# ----------------- BERT MODEL (loaded lazily) -----------------
+# ---------- BERT fake news classifier ----------
 _model_state = {"pipe": None, "loading": False, "error": None}
 
-
 def _load_model():
-    """Load a pretrained BERT-based fake news classifier."""
     if _model_state["pipe"] is not None:
         return _model_state["pipe"]
     from transformers import AutoTokenizer, AutoModelForSequenceClassification, pipeline
@@ -50,31 +70,32 @@ def _load_model():
     logger.info("BERT model loaded.")
     return pipe
 
-
 def classify_text_sync(title: str, text: str) -> dict:
     pipe = _load_model()
-    # Model expects format: "<title> <content>"
     combined = f"<title> {title or ''} <content> {text[:2000]}"
     result = pipe(combined)[0]
-    label = result["label"].upper()
+    label = result["label"]
     score = float(result["score"])
-    # Normalize to REAL / FAKE
-    verdict = label  # safe default
-    if "FAKE" in label or label == "LABEL_0":
-        verdict = "FAKE"
-    elif "REAL" in label or "TRUE" in label or label == "LABEL_1":
+    
+    # Map the labels correctly
+    if label == "TRUE":
         verdict = "REAL"
-    return {"verdict": verdict, "confidence": score, "raw_label": result["label"]}
+        confidence = score
+    elif label == "FAKE":
+        verdict = "FAKE"
+        confidence = score
+    else:
+        verdict = "UNKNOWN"
+        confidence = score
+    
+    logger.info(f"BERT classification: {verdict} with confidence {confidence:.4f} (raw: {label})")
+    
+    return {"verdict": verdict, "confidence": confidence, "raw_label": label}
 
-
-# ----------------- ARTICLE EXTRACTION -----------------
-# ----------------- ARTICLE EXTRACTION -----------------
+# ---------- Article extraction (unchanged) ----------
 _url_cache: dict = {}
 
-
 def resolve_google_news_url(url: str) -> str:
-    """Decode news.google.com RSS links into the original publisher URL.
-    Falls back to the input URL on failure. Cached to avoid repeated decoding."""
     if "news.google.com" not in url:
         return url
     cached = _url_cache.get(url)
@@ -90,16 +111,9 @@ def resolve_google_news_url(url: str) -> str:
         logger.warning(f"URL decode failed for {url[:80]}: {e}")
     return url
 
-
 BROWSER_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
-        "(KHTML, like Gecko) Version/17.2 Safari/605.1.15"
-    ),
-    "Accept": (
-        "text/html,application/xhtml+xml,application/xml;q=0.9,"
-        "image/webp,image/apng,*/*;q=0.8"
-    ),
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
     "Accept-Encoding": "gzip, deflate, br",
     "Referer": "https://www.google.com/",
@@ -107,11 +121,8 @@ BROWSER_HEADERS = {
     "Sec-Fetch-Dest": "document",
     "Sec-Fetch-Mode": "navigate",
     "Sec-Fetch-Site": "cross-site",
-    "Sec-Fetch-User": "?1",
     "Cache-Control": "no-cache",
-    "Pragma": "no-cache",
 }
-
 
 def _parse_html_article(content: bytes) -> dict:
     soup = BeautifulSoup(content, "lxml")
@@ -143,19 +154,11 @@ def _parse_html_article(content: bytes) -> dict:
         body = soup.get_text(" ", strip=True)[:5000]
     return {"title": title or "Untitled", "description": description, "image": image, "body": body}
 
-
 def _fetch_via_jina_reader(url: str) -> dict:
-    """Fallback extractor for bot-blocked/paywalled sites using the free
-    Jina Reader service (https://r.jina.ai). Returns clean article markdown."""
     reader_url = f"https://r.jina.ai/{url}"
-    resp = requests.get(
-        reader_url,
-        headers={"Accept": "text/plain", "User-Agent": BROWSER_HEADERS["User-Agent"]},
-        timeout=30,
-    )
+    resp = requests.get(reader_url, headers={"Accept": "text/plain", "User-Agent": BROWSER_HEADERS["User-Agent"]}, timeout=45)
     resp.raise_for_status()
     text = resp.text
-    # Jina surfaces upstream errors as "Warning: Target URL returned error ..."
     if "Target URL returned error" in text or "requiring CAPTCHA" in text:
         raise RuntimeError("upstream site blocked content extraction (paywall/CAPTCHA)")
     title = ""
@@ -173,24 +176,12 @@ def _fetch_via_jina_reader(url: str) -> dict:
         raise RuntimeError("extracted content appears to be a bot-block page")
     return {"title": title or "Untitled", "description": "", "image": "", "body": body}
 
-
 BLOCK_PAGE_SIGNATURES = (
-    "are you a robot",
-    "access denied",
-    "forbidden",
-    "enable javascript",
-    "please enable cookies",
-    "just a moment",
-    "attention required",
-    "cloudflare",
-    "captcha",
-    "bot detection",
-    "checking your browser",
+    "are you a robot", "access denied", "forbidden", "enable javascript",
+    "please enable cookies", "just a moment", "attention required",
+    "cloudflare", "captcha", "bot detection", "checking your browser",
 )
 
-# Established news outlets — Gemini cannot fact-check claims it has not seen
-# in training. For these sources, default the verdict to REAL unless the writing
-# itself is satirical or an opinion piece pretending to be reporting.
 TRUSTED_NEWS_DOMAINS = {
     "apnews.com", "reuters.com", "bbc.com", "bbc.co.uk", "nytimes.com",
     "washingtonpost.com", "wsj.com", "ft.com", "bloomberg.com", "npr.org",
@@ -203,12 +194,10 @@ TRUSTED_NEWS_DOMAINS = {
     "nasa.gov", "noaa.gov", "who.int", "cdc.gov", "un.org",
 }
 
-# Known satire / parody outlets — always flag as FAKE for a news-detector context
 SATIRE_DOMAINS = {
     "theonion.com", "babylonbee.com", "clickhole.com", "reductress.com",
     "thehardtimes.net", "dailymash.co.uk", "thebeaverton.com",
 }
-
 
 def _domain_of(url: str) -> str:
     try:
@@ -220,175 +209,119 @@ def _domain_of(url: str) -> str:
     except Exception:
         return ""
 
-
 def _looks_like_block_page(parsed: dict) -> bool:
     blob = f"{parsed.get('title','')} {parsed.get('body','')[:600]}".lower()
     return any(sig in blob for sig in BLOCK_PAGE_SIGNATURES)
 
-
 def fetch_article(url: str) -> dict:
-    """Fetch + parse article. Tries a direct browser-like request first and
-    falls back to Jina Reader on 403/blocked/short-content/bot-block pages."""
+    # Try direct fetch first
     try:
         resp = requests.get(url, headers=BROWSER_HEADERS, timeout=20, allow_redirects=True)
         if resp.status_code == 200:
             parsed = _parse_html_article(resp.content)
-            if (
-                parsed["body"]
-                and len(parsed["body"]) >= 200
-                and not _looks_like_block_page(parsed)
-            ):
+            if parsed["body"] and len(parsed["body"]) >= 200 and not _looks_like_block_page(parsed):
                 return parsed
-            logger.info(
-                f"Direct fetch unusable (blocked/short: "
-                f"{len(parsed['body'])} chars, title='{parsed['title'][:60]}'), trying Jina"
-            )
+            logger.info(f"Direct fetch unusable, trying Jina")
         else:
             logger.info(f"Direct fetch status {resp.status_code}, trying Jina")
     except Exception as e:
         logger.info(f"Direct fetch failed ({e}), trying Jina")
-
-    # Fallback: Jina Reader
+    
+    # Try Jina Reader
     try:
         return _fetch_via_jina_reader(url)
     except Exception as e:
         logger.info(f"Jina fallback failed: {e}")
-        raise RuntimeError(
-            "This site blocks automated access (paywall or anti-bot protection). "
-            "Try a different article URL or paste the text directly."
-        )
+        
+    # Try newspaper3k as final fallback
+    try:
+        logger.info(f"Trying newspaper3k for {url}")
+        article = Article(url)
+        article.download()
+        article.parse()
+        if article.text and len(article.text) >= 200:
+            return {
+                "title": article.title or "",
+                "body": article.text[:5000],
+                "source": url
+            }
+    except Exception as e:
+        logger.info(f"newspaper3k failed: {e}")
+        
+    raise RuntimeError("This site blocks automated access. Try a different article URL.")
 
-
-# ----------------- GEMINI EXPLANATION -----------------
+# ---------- Gemini classification and explanation ----------
 async def get_explanation(title: str, body: str, verdict: str, confidence: float) -> str:
     try:
-        from emergentintegrations.llm.chat import LlmChat, UserMessage
-        key = os.environ.get("EMERGENT_LLM_KEY")
-        if not key:
-            return "Explanation unavailable (missing LLM key)."
-        chat = LlmChat(
-            api_key=key,
-            session_id=f"fnd-{uuid.uuid4()}",
-            system_message=(
-                "You are a media-literacy analyst. You are given a news article and the combined "
-                "verdict (FAKE or REAL with confidence) from an ensemble of a BERT classifier and "
-                "a Gemini reviewer. Produce a short, analytical explanation (4-6 bullet points) "
-                "covering: source credibility signals, tone & language, factual verifiability, "
-                "sensationalism/bias, and a final takeaway. Be objective. Do NOT say you are an AI. "
-                "Output markdown bullets only."
-            ),
-        ).with_model("gemini", "gemini-2.5-flash")
-        prompt = (
-            f"Ensemble verdict: {verdict} (confidence {confidence*100:.1f}%)\n\n"
-            f"Title: {title}\n\n"
-            f"Article excerpt:\n{body[:3500]}"
-        )
-        reply = await chat.send_message(UserMessage(text=prompt))
-        return str(reply).strip()
+        genai.configure(api_key=gemini_api_key)
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        prompt = f"""You are a media-literacy analyst. You are given a news article and the combined 
+        verdict ({verdict} with confidence {confidence*100:.1f}%) from a BERT classifier.
+        Produce a short, analytical explanation (4-6 bullet points) 
+        covering: source credibility signals, tone & language, factual verifiability, 
+        sensationalism/bias, and a final takeaway. Be objective. Do NOT say you are an AI. 
+        Output markdown bullets only.
+        
+        Title: {title}
+        
+        Article excerpt:
+        {body[:3500]}"""
+        response = await run_in_threadpool(model.generate_content, prompt)
+        return response.text.strip()
     except Exception as e:
         logger.exception("Explanation failed")
         return f"Explanation unavailable: {e}"
 
-
-# ----------------- GEMINI SECOND-OPINION CLASSIFIER -----------------
 async def gemini_classify(title: str, body: str, source_domain: str = "") -> dict:
-    """Independent verdict from Gemini. Returns {verdict, confidence, reason}."""
     fallback = {"verdict": "UNKNOWN", "confidence": 0.0, "reason": "Unavailable"}
     try:
-        from emergentintegrations.llm.chat import LlmChat, UserMessage
-        key = os.environ.get("EMERGENT_LLM_KEY")
-        if not key:
-            return fallback
+        genai.configure(api_key=gemini_api_key)
+        model = genai.GenerativeModel('gemini-1.5-flash')
         today = datetime.now(timezone.utc).strftime("%B %Y")
         is_trusted = source_domain in TRUSTED_NEWS_DOMAINS
         is_satire = source_domain in SATIRE_DOMAINS
         source_note = ""
         if is_satire:
-            source_note = (
-                f"\n\nIMPORTANT: This article is from {source_domain}, a known "
-                "satire / parody outlet. For a fake-news detector, satire counts "
-                "as FAKE. Classify FAKE.\n"
-            )
+            source_note = f"\n\nIMPORTANT: This article is from {source_domain}, a known satire/parody outlet. Classify FAKE.\n"
         elif is_trusted:
-            source_note = (
-                f"\n\nIMPORTANT: This article is from {source_domain}, an established "
-                "newswire / mainstream outlet. Such outlets have editorial standards "
-                "and corrections processes. Do NOT classify it FAKE because you "
-                "cannot personally verify the facts; you have no live web access. "
-                "Classify FAKE only if the writing itself is clearly satirical, "
-                "opinion presented as news, or shows obvious fabrication patterns. "
-                "Otherwise, classify REAL.\n"
-            )
-        chat = LlmChat(
-            api_key=key,
-            session_id=f"cls-{uuid.uuid4()}",
-            system_message=(
-                f"Today's date is {today}. Your training data may end earlier than "
-                f"this — you MUST NOT flag an article as FAKE simply because it "
-                f"reports recent events, names recent officials, or cites dates "
-                f"after your knowledge cutoff. Treat news from {today} as current."
-                + source_note
-                + "\n\nYou are a senior fact-checker classifying news articles. "
-                "Use a REAL-leaning prior: if the article reads like genuine "
-                "reporting from a recognizable outlet, has plausible "
-                "names/dates/quotes, attributes claims to sources, and lacks "
-                "obvious red flags, classify it REAL. Classify it FAKE only when "
-                "there are CLEAR signs of misinformation: fabricated facts "
-                "presented without sourcing, conspiracy claims, satire posing as "
-                "news, manipulated statistics, physically impossible events, or "
-                "articles from known-fake outlets. Recency, unfamiliar names, or "
-                "events you do not recognise are NOT grounds for FAKE.\n\n"
-                "When uncertain between the two, choose REAL.\n\n"
-                "Return STRICT JSON only, no prose, no markdown fences:\n"
-                '{"verdict": "REAL" | "FAKE", "confidence": <float 0..1>, '
-                '"reason": "<one short sentence>"}'
-            ),
-        ).with_model("gemini", "gemini-2.5-flash")
-        prompt = (
-            f"Source: {source_domain or 'unknown'}\nTitle: {title}\n\nArticle:\n{body[:3500]}"
-        )
-        reply = await chat.send_message(UserMessage(text=prompt))
-        raw = str(reply).strip()
-        # Strip code fences if present
+            source_note = f"\n\nIMPORTANT: This article is from {source_domain}, an established news outlet. Classify REAL unless clearly satirical.\n"
+        prompt = f"""Today's date is {today}. You are a senior fact-checker classifying news articles.
+
+{source_note}
+
+Article Source: {source_domain or 'unknown'}
+Title: {title}
+
+Article Content:
+{body[:3500]}
+
+Return STRICT JSON only, no prose, no markdown fences:
+{{"verdict": "REAL" or "FAKE", "confidence": <float 0..1>, "reason": "<one short sentence>"}}"""
+        response = await run_in_threadpool(model.generate_content, prompt)
+        raw = response.text.strip()
         raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.IGNORECASE).strip()
-        # Extract first {...}
-        m = re.search(r"\{.*\}", raw, flags=re.DOTALL)
-        if not m:
-            return fallback
-        import json as _json
-        data = _json.loads(m.group(0))
-        v = str(data.get("verdict", "")).strip().upper()
-        if v not in ("REAL", "FAKE"):
-            return fallback
-        try:
-            c = float(data.get("confidence", 0.5))
-        except (TypeError, ValueError):
-            c = 0.5
-        c = max(0.0, min(1.0, c))
-        return {"verdict": v, "confidence": c, "reason": str(data.get("reason", ""))[:240]}
+        import json
+        data = json.loads(raw)
+        return {
+            "verdict": data.get("verdict", "UNKNOWN"),
+            "confidence": float(data.get("confidence", 0.5)),
+            "reason": data.get("reason", "")[:240]
+        }
     except Exception as e:
         logger.exception("Gemini classification failed")
         return {**fallback, "reason": f"error: {e}"}
 
-
 def combine_verdicts(bert: dict, gemini: dict) -> dict:
-    """Gemini is the primary classifier (much more accurate on modern news).
-    BERT is kept as a secondary informational signal. Final verdict = Gemini's
-    verdict whenever Gemini is available; BERT is only used if Gemini fails."""
     g_v = gemini.get("verdict", "UNKNOWN")
     b_v = bert.get("verdict", "UNKNOWN")
-    b_c = float(bert.get("confidence", 0.0))
     g_c = float(gemini.get("confidence", 0.0))
     if g_v in ("REAL", "FAKE"):
         return {"verdict": g_v, "confidence": g_c, "agreement": (g_v == b_v)}
-    # Gemini unavailable -> fall back to BERT
-    return {"verdict": b_v, "confidence": b_c, "agreement": False}
+    return {"verdict": b_v, "confidence": float(bert.get("confidence", 0.0)), "agreement": False}
 
-
-# ----------------- MODELS -----------------
+# ---------- Pydantic models ----------
 class AnalyzeRequest(BaseModel):
     url: str
-
 
 class AnalysisItem(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -409,7 +342,6 @@ class AnalysisItem(BaseModel):
     agreement: bool = True
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
-
 class TrendingItem(BaseModel):
     title: str
     link: str
@@ -417,101 +349,81 @@ class TrendingItem(BaseModel):
     published: str = ""
     description: str = ""
 
-
 class ChatMessage(BaseModel):
-    role: str  # "user" | "assistant"
+    role: str
     content: str
-
 
 class ChatRequest(BaseModel):
     analysis_id: str
     question: str
     history: List[ChatMessage] = Field(default_factory=list)
 
-
 class ChatResponse(BaseModel):
     answer: str
 
-
-# ----------------- ROUTES -----------------
+# ---------- API routes ----------
 @api_router.get("/")
 async def root():
     return {"message": "Fake News Detector API", "model": "hamzab/roberta-fake-news-classification"}
 
+@api_router.get("/health")
+async def health():
+    """Health check endpoint"""
+    return {
+        "status": "ok",
+        "model_loaded": _model_state["pipe"] is not None,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
 
 @api_router.get("/model/status")
 async def model_status():
-    return {
-        "loaded": _model_state["pipe"] is not None,
-        "model": "hamzab/roberta-fake-news-classification",
-    }
-
+    return {"loaded": _model_state["pipe"] is not None, "model": "hamzab/roberta-fake-news-classification"}
 
 @api_router.post("/analyze", response_model=AnalysisItem)
 async def analyze(req: AnalyzeRequest):
     url = req.url.strip()
     if not re.match(r"^https?://", url):
         raise HTTPException(status_code=400, detail="Invalid URL. Must start with http(s)://")
-    # Decode Google News redirect URLs into publisher URLs
     if "news.google.com" in url:
         url = await run_in_threadpool(resolve_google_news_url, url)
     try:
         article = await run_in_threadpool(fetch_article, url)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to fetch article: {e}")
-
     if not article["body"] or len(article["body"]) < 50:
-        raise HTTPException(status_code=400, detail="Could not extract enough article content from this URL.")
-
+        raise HTTPException(status_code=400, detail="Could not extract enough article content.")
     try:
         bert_cls = await run_in_threadpool(classify_text_sync, article["title"], article["body"])
     except Exception as e:
         logger.exception("Classification failed")
         raise HTTPException(status_code=500, detail=f"Classification failed: {e}")
-
     gemini_cls = await gemini_classify(article["title"], article["body"], _domain_of(url))
     final = combine_verdicts(bert_cls, gemini_cls)
     explanation = await get_explanation(article["title"], article["body"], final["verdict"], final["confidence"])
-
     item = AnalysisItem(
-        url=url,
-        title=article["title"],
-        description=article["description"],
-        image=article["image"],
-        body=article["body"][:8000],
-        verdict=final["verdict"],
-        confidence=final["confidence"],
-        explanation=explanation,
-        bert_verdict=bert_cls.get("verdict", ""),
+        url=url, title=article["title"], description=article["description"], image=article["image"],
+        body=article["body"][:8000], verdict=final["verdict"], confidence=final["confidence"],
+        explanation=explanation, bert_verdict=bert_cls.get("verdict", ""),
         bert_confidence=float(bert_cls.get("confidence", 0.0)),
         gemini_verdict=gemini_cls.get("verdict", ""),
         gemini_confidence=float(gemini_cls.get("confidence", 0.0)),
-        gemini_reason=gemini_cls.get("reason", ""),
-        agreement=bool(final.get("agreement", True)),
+        gemini_reason=gemini_cls.get("reason", ""), agreement=bool(final.get("agreement", True))
     )
     doc = item.model_dump()
     doc["created_at"] = doc["created_at"].isoformat()
     await db.analyses.insert_one(doc)
     return item
 
-
 @api_router.post("/chat", response_model=ChatResponse)
 async def chat_about_article(req: ChatRequest):
-    """Conversational Q&A about a previously-analyzed article. Gemini answers
-    using the article content + its general knowledge, regardless of whether
-    the article was classified REAL or FAKE."""
     doc = await db.analyses.find_one({"id": req.analysis_id}, {"_id": 0})
     if not doc:
         raise HTTPException(status_code=404, detail="Analysis not found")
     question = (req.question or "").strip()
     if not question:
         raise HTTPException(status_code=400, detail="Question is empty")
-
     try:
-        from emergentintegrations.llm.chat import LlmChat, UserMessage
-        key = os.environ.get("EMERGENT_LLM_KEY")
-        if not key:
-            raise RuntimeError("Missing LLM key")
+        genai.configure(api_key=gemini_api_key)
         today = datetime.now(timezone.utc).strftime("%B %Y")
         verdict = doc.get("verdict", "UNKNOWN")
         body = (doc.get("body") or "")[:5000]
@@ -519,97 +431,136 @@ async def chat_about_article(req: ChatRequest):
         url = doc.get("url", "")
         domain = _domain_of(url)
 
-        system_msg = (
-            f"Today is {today}. You are a thoughtful research assistant helping "
-            "a user understand a news article they just analyzed. You have access "
-            "to: (1) the article excerpt, (2) the source domain, (3) the system's "
-            "fake-news verdict on it. Answer the user's question clearly and "
-            "honestly, drawing on both the article content and your general "
-            "knowledge.\n\n"
-            "RULES:\n"
-            "- Give straight, balanced answers — do NOT keep repeating the verdict.\n"
-            "- If the question is factual and you don't know, say so plainly; do "
-            "  not fabricate.\n"
-            "- Distinguish what is IN THE ARTICLE vs. what is YOUR OWN context.\n"
-            "- If the article was classified FAKE, you can still answer factual "
-            "  questions about the topic from your own knowledge.\n"
-            "- Use markdown for clarity (short paragraphs, bullets when helpful).\n"
-            "- Keep answers concise (3–6 sentences unless more is genuinely needed)."
-        )
-
-        # Build a session id stable per-analysis so emergentintegrations can
-        # carry context within a single chat thread if the library supports it.
-        session_id = f"chat-{req.analysis_id}"
-        chat = LlmChat(
-            api_key=key,
-            session_id=session_id,
-            system_message=system_msg,
-        ).with_model("gemini", "gemini-2.5-flash")
-
-        # Compose the prompt: article context + recent history + new question
+        system_msg = f"""Today is {today}. You are a thoughtful research assistant helping a user understand a news article. 
+You have access to: (1) the article excerpt, (2) the source domain, (3) the system's fake-news verdict on it.
+Answer the user's question clearly and honestly.
+RULES:
+- Give straight, balanced answers.
+- Distinguish what is IN THE ARTICLE vs. your own knowledge.
+- Use markdown. Keep answers concise (3-6 sentences)."""
+        model = genai.GenerativeModel('gemini-1.5-flash', system_instruction=system_msg)
+        
+        # Build conversation history
         history_lines = []
         for msg in req.history[-8:]:
             tag = "User" if msg.role == "user" else "Assistant"
             history_lines.append(f"{tag}: {msg.content}")
-        history_block = "\n".join(history_lines)
-
-        prompt = (
-            f"ARTICLE CONTEXT\n"
-            f"---------------\n"
-            f"Source domain: {domain or 'unknown'}\n"
-            f"URL: {url}\n"
-            f"Title: {title}\n"
-            f"System verdict: {verdict} (confidence "
-            f"{float(doc.get('confidence', 0)) * 100:.0f}%)\n\n"
-            f"Article excerpt:\n{body}\n\n"
-            + (f"PRIOR CONVERSATION\n------------------\n{history_block}\n\n" if history_block else "")
-            + f"USER QUESTION\n-------------\n{question}\n"
-        )
-
-        reply = await chat.send_message(UserMessage(text=prompt))
-        answer = str(reply).strip()
-
-        # Persist user + assistant messages (TTL index expires them after 30 days)
+        history_block = "\n".join(history_lines) if history_lines else ""
+        
+        # Create prompt
+        prompt_parts = [
+            "ARTICLE CONTEXT",
+            f"Source domain: {domain}",
+            f"Title: {title}",
+            f"System verdict: {verdict} (confidence {float(doc.get('confidence',0))*100:.0f}%)",
+            "Article excerpt:",
+            body,
+            ""
+        ]
+        if history_block:
+            prompt_parts.append("PRIOR CONVERSATION:")
+            prompt_parts.append(history_block)
+            prompt_parts.append("")
+        prompt_parts.append(f"USER QUESTION: {question}")
+        prompt = "\n".join(prompt_parts)
+        
+        response = await run_in_threadpool(model.generate_content, prompt)
+        answer = response.text.strip()
         now = datetime.now(timezone.utc)
         await db.chat_messages.insert_many([
-            {
-                "id": str(uuid.uuid4()),
-                "analysis_id": req.analysis_id,
-                "role": "user",
-                "content": question,
-                "created_at": now,
-            },
-            {
-                "id": str(uuid.uuid4()),
-                "analysis_id": req.analysis_id,
-                "role": "assistant",
-                "content": answer,
-                "created_at": now,
-            },
+            {"id": str(uuid.uuid4()), "analysis_id": req.analysis_id, "role": "user", "content": question, "created_at": now},
+            {"id": str(uuid.uuid4()), "analysis_id": req.analysis_id, "role": "assistant", "content": answer, "created_at": now}
         ])
         return ChatResponse(answer=answer)
-    except HTTPException:
-        raise
     except Exception as e:
         logger.exception("Chat failed")
         raise HTTPException(status_code=500, detail=f"Chat error: {e}")
+@api_router.post("/analyze-fast")
+async def analyze_fast(request: dict):
+    """FAST endpoint - BERT only, no URL fetching, no Gemini"""
+    try:
+        # Get text from request body
+        text = request.get("text", "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="No text provided")
+        
+        # Get BERT prediction
+        bert_result = await run_in_threadpool(classify_text_sync, "Test", text)
+        
+        # Create analysis item
+        item = AnalysisItem(
+            id=str(uuid.uuid4()),
+            url="text-input",
+            title="Text Analysis",
+            description="",
+            image="",
+            body=text[:500],
+            verdict=bert_result["verdict"],
+            confidence=bert_result["confidence"],
+            explanation=f"BERT classifier analyzed the text and found it to be {bert_result['verdict']} with {bert_result['confidence']*100:.1f}% confidence.\n\nNote: This is a fast analysis without Gemini fact-checking.",
+            bert_verdict=bert_result["verdict"],
+            bert_confidence=bert_result["confidence"],
+            gemini_verdict="",
+            gemini_confidence=0.0,
+            gemini_reason="",
+            agreement=True,
+            created_at=datetime.now(timezone.utc)
+        )
+        
+        # Save to database
+        #doc = item.model_dump()
+        #doc["created_at"] = doc["created_at"].isoformat()
+        #await db.analyses.insert_one(doc)
+        
+        # Return the result
+        return {
+            "id": item.id,
+            "url": item.url,
+            "title": item.title,
+            "description": item.description,
+            "image": item.image,
+            "body": item.body,
+            "verdict": item.verdict,
+            "confidence": item.confidence,
+            "explanation": item.explanation,
+            "bert_verdict": item.bert_verdict,
+            "bert_confidence": item.bert_confidence,
+            "gemini_verdict": item.gemini_verdict,
+            "gemini_confidence": item.gemini_confidence,
+            "gemini_reason": item.gemini_reason,
+            "agreement": item.agreement,
+            "created_at": item.created_at.isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Fast analysis failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+@api_router.post("/analyze", response_model=AnalysisItem)
+async def analyze(req: AnalyzeRequest):
+    try:
+        # Set overall timeout of 25 seconds
+        result = await asyncio.wait_for(
+            _analyze_with_timeout(req),
+            timeout=25.0
+        )
+        return result
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Analysis taking too long. Please try a shorter article or try again later.")
 
+async def _analyze_with_timeout(req: AnalyzeRequest):
+    # Your existing analyze code here (copy everything from your current analyze function)
+    url = req.url.strip()
+    # ... rest of your existing analyze code ...
 
 @api_router.get("/chat/{analysis_id}", response_model=List[ChatMessage])
 async def get_chat_history(analysis_id: str):
-    """Return persisted chat history for an analysis (auto-expires after 30 days)."""
-    cursor = db.chat_messages.find(
-        {"analysis_id": analysis_id}, {"_id": 0, "role": 1, "content": 1, "created_at": 1}
-    ).sort("created_at", 1)
+    cursor = db.chat_messages.find({"analysis_id": analysis_id}, {"_id": 0, "role": 1, "content": 1, "created_at": 1}).sort("created_at", 1)
     docs = await cursor.to_list(length=200)
     return [ChatMessage(role=d["role"], content=d["content"]) for d in docs]
-
 
 @api_router.delete("/chat/{analysis_id}")
 async def clear_chat_history(analysis_id: str):
     res = await db.chat_messages.delete_many({"analysis_id": analysis_id})
     return {"ok": True, "deleted": res.deleted_count}
-
 
 @api_router.get("/history", response_model=List[AnalysisItem])
 async def history(limit: int = 50):
@@ -623,7 +574,6 @@ async def history(limit: int = 50):
                 d["created_at"] = datetime.now(timezone.utc)
     return docs
 
-
 @api_router.delete("/history/{item_id}")
 async def delete_history(item_id: str):
     res = await db.analyses.delete_one({"id": item_id})
@@ -632,13 +582,11 @@ async def delete_history(item_id: str):
     await db.chat_messages.delete_many({"analysis_id": item_id})
     return {"ok": True}
 
-
 @api_router.delete("/history")
 async def clear_history():
     await db.analyses.delete_many({})
     await db.chat_messages.delete_many({})
     return {"ok": True}
-
 
 @api_router.get("/stats")
 async def stats():
@@ -648,10 +596,8 @@ async def stats():
     uncertain = await db.analyses.count_documents({"verdict": "UNCERTAIN"})
     return {"total": total, "fake": fake, "real": real, "uncertain": uncertain}
 
-
 @api_router.get("/trending", response_model=List[TrendingItem])
 async def trending(topic: str = "top", country: str = "US", lang: str = "en"):
-    """Fetch trending news from Google News RSS (RESTful, no key required)."""
     topic_map = {
         "top": f"https://news.google.com/rss?hl={lang}-{country}&gl={country}&ceid={country}:{lang}",
         "world": f"https://news.google.com/rss/headlines/section/topic/WORLD?hl={lang}-{country}&gl={country}&ceid={country}:{lang}",
@@ -667,22 +613,18 @@ async def trending(topic: str = "top", country: str = "US", lang: str = "en"):
         feed = await run_in_threadpool(feedparser.parse, url)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Feed error: {e}")
-
-    items: List[TrendingItem] = []
+    items = []
     entries = feed.entries[:15]
-    # Decode Google News encoded links to real publisher URLs in parallel
     import asyncio
     raw_links = [e.get("link", "") for e in entries]
-    decoded_links = await asyncio.gather(
-        *[run_in_threadpool(resolve_google_news_url, u) for u in raw_links]
-    )
+    decoded_links = await asyncio.gather(*[run_in_threadpool(resolve_google_news_url, u) for u in raw_links])
     for entry, link in zip(entries, decoded_links):
         raw_desc = entry.get("summary", "")
         clean_desc = re.sub(r"<[^>]+>", "", raw_desc)
         clean_desc = html.unescape(clean_desc).strip()
         source = ""
         if entry.get("source"):
-            source = getattr(entry.source, "title", "") or entry.source.get("title", "") if hasattr(entry.source, "get") else getattr(entry.source, "title", "")
+            source = getattr(entry.source, "title", "") or (entry.source.get("title", "") if hasattr(entry.source, "get") else "")
         items.append(TrendingItem(
             title=entry.get("title", ""),
             link=link or entry.get("link", ""),
@@ -692,39 +634,56 @@ async def trending(topic: str = "top", country: str = "US", lang: str = "en"):
         ))
     return items
 
-
 app.include_router(api_router)
+
+# ---------- Serve React root and catch-all ----------
+#if frontend_build_path.exists():
+    #@app.get("/")
+   # async def serve_react_root():
+       # return FileResponse(frontend_build_path / "index.html")
+
+   # @app.get("/{full_path:path}")
+    #async def serve_react_spa(full_path: str):
+        #if full_path.startswith("api/"):
+         #   raise HTTPException(status_code=404, detail="Not found")
+        #file_path = frontend_build_path / full_path
+        #if file_path.exists() and file_path.is_file():
+        #    return FileResponse(file_path)
+        #return FileResponse(frontend_build_path / "index.html")
 
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    allow_origins=os.environ.get('CORS_ORIGINS', 'http://localhost:3000,http://localhost:5173').split(','),
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-
 @app.on_event("startup")
 async def startup_event():
-    # Pre-load model in background so first request is fast-ish
-    import threading
-    def _warm():
-        try:
-            _load_model()
-        except Exception as e:
-            logger.exception(f"Model warm load failed: {e}")
-    threading.Thread(target=_warm, daemon=True).start()
-
-    # TTL index — chat messages auto-expire 30 days after creation
+    """Initialize on startup"""
+    logger.info("Starting up...")
+    
+    # Load BERT model in threadpool (non-blocking)
     try:
-        await db.chat_messages.create_index(
-            "created_at", expireAfterSeconds=60 * 60 * 24 * 30
-        )
+        await run_in_threadpool(_load_model)
+        logger.info("BERT model loaded successfully")
+    except Exception as e:
+        logger.error(f"Failed to load BERT model: {e}")
+    
+    # Create MongoDB indexes
+    try:
+        await db.chat_messages.create_index("created_at", expireAfterSeconds=60*60*24*30)
         await db.chat_messages.create_index("analysis_id")
+        logger.info("MongoDB indexes created/verified")
     except Exception as e:
         logger.warning(f"Index creation failed: {e}")
-
+    
+    logger.info("Startup complete")
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
+    """Close MongoDB connection on shutdown"""
+    logger.info("Shutting down...")
     client.close()
+    logger.info("MongoDB connection closed")

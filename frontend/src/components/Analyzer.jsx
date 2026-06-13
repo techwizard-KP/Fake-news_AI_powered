@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link as LinkIcon, MagnifyingGlass, CircleNotch } from "@phosphor-icons/react";
+import { Link as LinkIcon, MagnifyingGlass, CircleNotch, TextAlignLeft } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
 const EXAMPLES = [
@@ -10,19 +10,31 @@ const EXAMPLES = [
 
 export default function Analyzer({ onAnalyze, loading, urlInput, setUrlInput }) {
   const [focused, setFocused] = useState(false);
+  const [inputMode, setInputMode] = useState("url"); // "url" or "text"
 
   const submit = (e) => {
     e.preventDefault();
-    const url = urlInput.trim();
-    if (!url) {
-      toast.error("Please paste a news article URL");
-      return;
+    
+    if (inputMode === "url") {
+      const url = urlInput.trim();
+      if (!url) {
+        toast.error("Please paste a news article URL");
+        return;
+      }
+      if (!/^https?:\/\//i.test(url)) {
+        toast.error("URL must start with http:// or https://");
+        return;
+      }
+      onAnalyze(url, false); // false = URL mode
+    } else {
+      // Text mode - send text directly to backend
+      const text = urlInput.trim();
+      if (!text) {
+        toast.error("Please paste article text");
+        return;
+      }
+      onAnalyze(text, true); // true = text mode
     }
-    if (!/^https?:\/\//i.test(url)) {
-      toast.error("URL must start with http:// or https://");
-      return;
-    }
-    onAnalyze(url);
   };
 
   return (
@@ -41,31 +53,75 @@ export default function Analyzer({ onAnalyze, loading, urlInput, setUrlInput }) 
           <span className="text-slate-400">In two seconds.</span>
         </h1>
         <p className="mt-4 text-slate-600 max-w-2xl">
-          Paste any news article URL. A <strong className="text-slate-900">Gemini</strong> fact-checker
+          Paste any news article URL or text. A <strong className="text-slate-900">Gemini</strong> fact-checker
           delivers the primary verdict — <strong className="text-emerald-700">REAL</strong> or{" "}
           <strong className="text-red-700">FAKE</strong> — backed by a fine-tuned{" "}
           <strong className="text-slate-900">RoBERTa</strong> BERT classifier as a secondary signal,
           plus a forensic explanation.
         </p>
 
-        <form onSubmit={submit} className="mt-8 grid grid-cols-1 md:grid-cols-[1fr_auto] gap-3">
+        {/* Mode Toggle Buttons */}
+        <div className="mt-6 flex gap-2 border-b border-slate-200">
+          <button
+            type="button"
+            onClick={() => setInputMode("url")}
+            className={`px-4 py-2 text-sm font-medium transition-colors ${
+              inputMode === "url" 
+                ? "text-slate-900 border-b-2 border-slate-900" 
+                : "text-slate-500 hover:text-slate-700"
+            }`}
+          >
+            <LinkIcon size={16} className="inline mr-1" />
+            URL Mode
+          </button>
+          <button
+            type="button"
+            onClick={() => setInputMode("text")}
+            className={`px-4 py-2 text-sm font-medium transition-colors ${
+              inputMode === "text" 
+                ? "text-slate-900 border-b-2 border-slate-900" 
+                : "text-slate-500 hover:text-slate-700"
+            }`}
+          >
+            <TextAlignLeft size={16} className="inline mr-1" />
+            Text Mode
+          </button>
+        </div>
+
+        <form onSubmit={submit} className="mt-4 grid grid-cols-1 md:grid-cols-[1fr_auto] gap-3">
           <div
-            className={`flex items-center border bg-slate-50 px-4 transition-colors ${
+            className={`flex items-start border bg-slate-50 px-4 transition-colors ${
               focused ? "border-slate-900" : "border-slate-300"
             }`}
           >
-            <LinkIcon size={18} className="text-slate-500 shrink-0" />
-            <input
-              type="url"
-              value={urlInput}
-              onChange={(e) => setUrlInput(e.target.value)}
-              onFocus={() => setFocused(true)}
-              onBlur={() => setFocused(false)}
-              placeholder="https://example.com/news-article"
-              className="w-full bg-transparent py-3.5 px-3 outline-none text-slate-900 placeholder:text-slate-400"
-              data-testid="url-input"
-              disabled={loading}
-            />
+            {inputMode === "url" ? (
+              <LinkIcon size={18} className="text-slate-500 shrink-0 mt-4" />
+            ) : (
+              <TextAlignLeft size={18} className="text-slate-500 shrink-0 mt-4" />
+            )}
+            {inputMode === "url" ? (
+              <input
+                type="url"
+                value={urlInput}
+                onChange={(e) => setUrlInput(e.target.value)}
+                onFocus={() => setFocused(true)}
+                onBlur={() => setFocused(false)}
+                placeholder="https://example.com/news-article"
+                className="w-full bg-transparent py-3.5 px-3 outline-none text-slate-900 placeholder:text-slate-400"
+                disabled={loading}
+              />
+            ) : (
+              <textarea
+                value={urlInput}
+                onChange={(e) => setUrlInput(e.target.value)}
+                onFocus={() => setFocused(true)}
+                onBlur={() => setFocused(false)}
+                placeholder="Paste the news article text here... (e.g., 'Breaking news: Scientists discover miracle cure...')"
+                rows={4}
+                className="w-full bg-transparent py-3.5 px-3 outline-none text-slate-900 placeholder:text-slate-400 font-mono text-sm"
+                disabled={loading}
+              />
+            )}
           </div>
           <button
             type="submit"
@@ -81,7 +137,7 @@ export default function Analyzer({ onAnalyze, loading, urlInput, setUrlInput }) 
             ) : (
               <>
                 <MagnifyingGlass size={18} weight="bold" />
-                Verify Article
+                Verify {inputMode === "url" ? "Article" : "Text"}
               </>
             )}
           </button>

@@ -19,7 +19,6 @@ export default function Dashboard() {
   const resultRef = useRef(null);
 
   const scrollToResult = () => {
-    // Use rAF + small delay so the DOM has rendered the new loading/result state
     requestAnimationFrame(() => {
       setTimeout(() => {
         const node = resultRef.current;
@@ -54,20 +53,47 @@ export default function Dashboard() {
     loadStats();
   }, [loadHistory, loadStats]);
 
-  const analyze = async (url) => {
+  const analyze = async (input, isText = false) => {
     setLoading(true);
     setResult(null);
     scrollToResult();
+    
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 25000);
+    
     try {
-      const { data } = await api.post("/analyze", { url });
-      setResult(data);
-      toast.success(`Classified as ${data.verdict}`);
+      let response;
+      
+      if (isText) {
+        // Send text in request body for POST
+        response = await api.post("/analyze-fast", { text: input }, {
+          signal: controller.signal
+        });
+      } else {
+        // Use URL endpoint
+        response = await api.post("/analyze", { url: input }, {
+          signal: controller.signal
+        });
+      }
+      
+      clearTimeout(timeoutId);
+      setResult(response.data);
+      toast.success(`Classified as ${response.data.verdict}`);
       loadHistory();
       loadStats();
       scrollToResult();
     } catch (e) {
-      const msg = e?.response?.data?.detail || e.message || "Analysis failed";
-      toast.error(msg);
+      clearTimeout(timeoutId);
+      
+      if (e.name === 'AbortError' || e.code === 'ECONNABORTED') {
+        toast.error("Analysis is taking too long. Please try again.");
+        logger.error("Request timeout:", input);
+      } else {
+        const msg = e?.response?.data?.detail || e.message || "Analysis failed";
+        toast.error(msg);
+        logger.error("Analysis error:", e);
+        console.error("Full error:", e);
+      }
     } finally {
       setLoading(false);
     }
@@ -123,7 +149,7 @@ export default function Dashboard() {
             <TrendingNews
               onVerify={(url) => {
                 setUrlInput(url);
-                analyze(url);
+                analyze(url, false);
               }}
             />
           </div>
