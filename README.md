@@ -47,30 +47,6 @@ A full-stack fake news detection system that uses BERT (RoBERTa) model to classi
 - **Gemini API** - AI-powered explanations
 - **Newspaper3k** - Article extraction
 
-## 📁 Project Structure
-Fake-news_AI_powered/
-├── backend/
-│ ├── server.py # FastAPI application
-│ ├── requirements.txt # Python dependencies
-│ ├── .env # Environment variables (not tracked)
-│ └── venv/ # Virtual environment (ignored)
-├── frontend/
-│ ├── src/
-│ │ ├── components/
-│ │ │ ├── Analyzer.jsx # URL/Text input component
-│ │ │ ├── ResultPanel.jsx # Results display
-│ │ │ └── ...
-│ │ ├── pages/
-│ │ │ └── Dashboard.jsx # Main dashboard
-│ │ ├── lib/
-│ │ │ └── api.js # API client
-│ │ └── App.js
-│ ├── package.json
-│ └── ...
-└── README.md
-
-text
-
 ## 🚀 Installation
 
 ### Prerequisites
