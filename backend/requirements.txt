@@ -2,11 +2,9 @@ fastapi
 uvicorn
 motor
 pydantic
-requests
 beautifulsoup4
 lxml
 feedparser
-google-generativeai
 python-dotenv
 certifi
 transformers
