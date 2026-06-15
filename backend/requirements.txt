@@ -12,3 +12,4 @@ torch
 aiohttp
 pymongo
 newspaper3k
+google-generativeai
