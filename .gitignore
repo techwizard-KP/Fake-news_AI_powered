@@ -21,3 +21,11 @@ Thumbs.db
 test_reports/
 frontend/.env
 frontend/build/
+
+# Frontend build configs (keep locally, not in repo)
+frontend/craco.config.js
+frontend/postcss.config.js
+frontend/tailwind.config.js
+frontend/jsconfig.json
+frontend/components.json
+frontend/package-lock.json
