@@ -9,6 +9,7 @@ import ChatPanel from "@/components/ChatPanel";
 import TrendingNews from "@/components/TrendingNews";
 import HistoryPanel from "@/components/HistoryPanel";
 import StatsBar from "@/components/StatsBar";
+import RAGSearch from "@/components/RAGSearch";
 
 export default function Dashboard() {
   const [result, setResult] = useState(null);
@@ -156,12 +157,17 @@ export default function Dashboard() {
         </section>
 
         <section>
+          <section className="mt-8">
+            <RAGSearch />
+          </section>
           <HistoryPanel
             history={history}
             onSelect={selectHistoryItem}
             onDelete={deleteItem}
             onClear={clearAll}
           />
+
+          
         </section>
 
         <footer className="border-t border-slate-300 pt-6 pb-12 text-xs tracking-[0.2em] uppercase text-slate-500 flex flex-wrap justify-between gap-3">

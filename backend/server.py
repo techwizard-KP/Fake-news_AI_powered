@@ -20,13 +20,14 @@ from pydantic import BaseModel, Field, ConfigDict
 import requests
 from bs4 import BeautifulSoup
 import feedparser
-#from googlenewsdecoder import gnewsdecoder
+# from googlenewsdecoder import gnewsdecoder  # Commented out - not installed
 import google.generativeai as genai
 from newspaper import Article
 import asyncio
 from functools import lru_cache
-from datetime import datetime, timedelta
-from GoogleNews import GoogleNews
+# from GoogleNews import GoogleNews  # Commented out - not needed
+from rag_service import rag_service
+
 # ---------- Environment and MongoDB ----------
 env_path = Path(__file__).resolve().parent / ".env"
 load_dotenv(dotenv_path=env_path)
@@ -48,11 +49,6 @@ db = client[db_name]
 # ---------- FastAPI app ----------
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
-
-# ---------- Serve React static files (if built) ----------
-#frontend_build_path = Path(__file__).parent.parent / "frontend" / "build"
-#if frontend_build_path.exists():
-    #app.mount("/static", StaticFiles(directory=frontend_build_path / "static"), name="static")
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -80,7 +76,6 @@ def classify_text_sync(title: str, text: str) -> dict:
     label = result["label"]
     score = float(result["score"])
     
-    # Map the labels correctly
     if label == "TRUE":
         verdict = "REAL"
         confidence = score
@@ -92,26 +87,15 @@ def classify_text_sync(title: str, text: str) -> dict:
         confidence = score
     
     logger.info(f"BERT classification: {verdict} with confidence {confidence:.4f} (raw: {label})")
-    
     return {"verdict": verdict, "confidence": confidence, "raw_label": label}
 
-# ---------- Article extraction (unchanged) ----------
+# ---------- Article extraction ----------
 _url_cache: dict = {}
 
 def resolve_google_news_url(url: str) -> str:
+    # Simplified version since gnewsdecoder is not installed
     if "news.google.com" not in url:
         return url
-    cached = _url_cache.get(url)
-    if cached:
-        return cached
-    try:
-        res = gnewsdecoder(url, interval=1)
-        if res and res.get("status") and res.get("decoded_url"):
-            decoded = res["decoded_url"]
-            _url_cache[url] = decoded
-            return decoded
-    except Exception as e:
-        logger.warning(f"URL decode failed for {url[:80]}: {e}")
     return url
 
 BROWSER_HEADERS = {
@@ -217,7 +201,6 @@ def _looks_like_block_page(parsed: dict) -> bool:
     return any(sig in blob for sig in BLOCK_PAGE_SIGNATURES)
 
 def fetch_article(url: str) -> dict:
-    # Try direct fetch first
     try:
         resp = requests.get(url, headers=BROWSER_HEADERS, timeout=20, allow_redirects=True)
         if resp.status_code == 200:
@@ -230,13 +213,11 @@ def fetch_article(url: str) -> dict:
     except Exception as e:
         logger.info(f"Direct fetch failed ({e}), trying Jina")
     
-    # Try Jina Reader
     try:
         return _fetch_via_jina_reader(url)
     except Exception as e:
         logger.info(f"Jina fallback failed: {e}")
         
-    # Try newspaper3k as final fallback
     try:
         logger.info(f"Trying newspaper3k for {url}")
         article = Article(url)
@@ -371,7 +352,6 @@ async def root():
 
 @api_router.get("/health")
 async def health():
-    """Health check endpoint"""
     return {
         "status": "ok",
         "model_loaded": _model_state["pipe"] is not None,
@@ -415,7 +395,31 @@ async def analyze(req: AnalyzeRequest):
     doc = item.model_dump()
     doc["created_at"] = doc["created_at"].isoformat()
     await db.analyses.insert_one(doc)
+    await rag_service.add_analysis(item.model_dump())
     return item
+
+# RAG endpoints
+@api_router.post("/rag/search")
+async def rag_search(request: dict):
+    try:
+        query = request.get("query", "").strip()
+        limit = request.get("limit", 5)
+        if not query:
+            raise HTTPException(status_code=400, detail="No search query provided")
+        results = await rag_service.search(query, limit)
+        return {"query": query, "results": results, "count": len(results)}
+    except Exception as e:
+        logger.error(f"RAG search failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.post("/rag/index-all")
+async def index_all_history():
+    try:
+        await rag_service.index_all_existing_analyses(db)
+        return {"message": "Successfully indexed all analyses"}
+    except Exception as e:
+        logger.error(f"Indexing failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @api_router.post("/chat", response_model=ChatResponse)
 async def chat_about_article(req: ChatRequest):
@@ -443,14 +447,12 @@ RULES:
 - Use markdown. Keep answers concise (3-6 sentences)."""
         model = genai.GenerativeModel('gemini-2.5-flash', system_instruction=system_msg)
         
-        # Build conversation history
         history_lines = []
         for msg in req.history[-8:]:
             tag = "User" if msg.role == "user" else "Assistant"
             history_lines.append(f"{tag}: {msg.content}")
         history_block = "\n".join(history_lines) if history_lines else ""
         
-        # Create prompt
         prompt_parts = [
             "ARTICLE CONTEXT",
             f"Source domain: {domain}",
@@ -478,34 +480,25 @@ RULES:
     except Exception as e:
         logger.exception("Chat failed")
         raise HTTPException(status_code=500, detail=f"Chat error: {e}")
+
 @api_router.post("/analyze-fast")
 async def analyze_fast(request: dict):
-    """Full analysis with BERT + Gemini (Gemini verdict is primary)"""
     try:
         text = request.get("text", "").strip()
         if not text:
             raise HTTPException(status_code=400, detail="No text provided")
         
-        # 1. Get BERT prediction (fast, secondary)
         bert_result = await run_in_threadpool(classify_text_sync, "Test", text)
-        
-        # 2. Get Gemini prediction (primary, more accurate)
         gemini_cls = await gemini_classify("Text Analysis", text, "")
         gemini_verdict = gemini_cls.get("verdict", "UNKNOWN")
         gemini_confidence = gemini_cls.get("confidence", 0.0)
         gemini_reason = gemini_cls.get("reason", "")
-        
-        # 3. Get Gemini detailed explanation
         gemini_explanation = await get_explanation("Text Analysis", text, gemini_verdict, gemini_confidence)
         
-        # 4. FINAL VERDICT = Gemini's verdict (primary)
         final_verdict = gemini_verdict if gemini_verdict in ["REAL", "FAKE"] else bert_result["verdict"]
         final_confidence = gemini_confidence if gemini_verdict in ["REAL", "FAKE"] else bert_result["confidence"]
-        
-        # 5. Check if BERT and Gemini agree
         agreement = (gemini_verdict == bert_result["verdict"])
         
-        # 6. Create combined explanation
         explanation = f"""## 🎯 PRIMARY VERDICT (Gemini AI)
 **Verdict:** {gemini_verdict}
 **Confidence:** {gemini_confidence*100:.1f}%
@@ -524,7 +517,6 @@ async def analyze_fast(request: dict):
 ## 📝 DETAILED ANALYSIS (Gemini)
 {gemini_explanation}"""
         
-        # Create analysis item
         item = AnalysisItem(
             id=str(uuid.uuid4()),
             url="text-input",
@@ -544,12 +536,11 @@ async def analyze_fast(request: dict):
             created_at=datetime.now(timezone.utc)
         )
         
-        # Save to database
         doc = item.model_dump()
         doc["created_at"] = doc["created_at"].isoformat()
         await db.analyses.insert_one(doc)
+        await rag_service.add_analysis(item.model_dump())
         
-        # Return the result
         return {
             "id": item.id,
             "url": item.url,
@@ -571,7 +562,6 @@ async def analyze_fast(request: dict):
     except Exception as e:
         logger.error(f"Analysis failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @api_router.get("/chat/{analysis_id}", response_model=List[ChatMessage])
 async def get_chat_history(analysis_id: str):
@@ -618,61 +608,45 @@ async def stats():
     uncertain = await db.analyses.count_documents({"verdict": "UNCERTAIN"})
     return {"total": total, "fake": fake, "real": real, "uncertain": uncertain}
 
-
-import aiohttp
-import os
-
 @api_router.get("/trending", response_model=List[TrendingItem])
 async def trending(topic: str = "top", country: str = "US", lang: str = "en"):
-    """Get news for all sections using multiple sources"""
-    
-    import requests
     import feedparser
     
     API_KEY = os.getenv("NEWS_API_KEY")
     
-    # Define sources for each topic
     sources_map = {
         "top": {
             "api": f"https://newsapi.org/v2/top-headlines?country={country.lower()}&pageSize=20&apiKey={API_KEY}",
             "rss": "http://rss.cnn.com/rss/cnn_topstories.rss",
-            "fallback": "general"
         },
         "world": {
             "api": f"https://newsapi.org/v2/top-headlines?country={country.lower()}&category=general&pageSize=20&apiKey={API_KEY}",
             "rss": "http://rss.cnn.com/rss/cnn_world.rss",
-            "fallback": "general"
         },
         "technology": {
             "api": f"https://newsapi.org/v2/top-headlines?country={country.lower()}&category=technology&pageSize=20&apiKey={API_KEY}",
             "rss": "http://rss.cnn.com/rss/cnn_tech.rss",
-            "fallback": "tech"
         },
         "business": {
             "api": f"https://newsapi.org/v2/top-headlines?country={country.lower()}&category=business&pageSize=20&apiKey={API_KEY}",
             "rss": "http://rss.cnn.com/rss/cnn_money.rss",
-            "fallback": "business"
         },
         "science": {
             "api": f"https://newsapi.org/v2/top-headlines?country={country.lower()}&category=science&pageSize=20&apiKey={API_KEY}",
             "rss": "https://feeds.npr.org/1007/rss.xml",
-            "fallback": "science"
         },
         "health": {
             "api": f"https://newsapi.org/v2/top-headlines?country={country.lower()}&category=health&pageSize=20&apiKey={API_KEY}",
             "rss": "http://rss.cnn.com/rss/cnn_health.rss",
-            "fallback": "health"
         },
     }
     
     source = sources_map.get(topic, sources_map["top"])
     
-    # Try NewsAPI first
     if API_KEY:
         try:
             response = await run_in_threadpool(requests.get, source["api"])
             data = response.json()
-            
             if data.get("status") == "ok" and data.get("articles"):
                 items = []
                 for article in data.get("articles", [])[:15]:
@@ -689,19 +663,16 @@ async def trending(topic: str = "top", country: str = "US", lang: str = "en"):
         except Exception as e:
             logger.error(f"NewsAPI failed for {topic}: {e}")
     
-    # Try RSS feed as fallback
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
         response = requests.get(source["rss"], headers=headers, timeout=10)
         feed = feedparser.parse(response.content)
-        
         items = []
         for entry in feed.entries[:15]:
             title = entry.get("title", "")
             if title:
                 raw_desc = entry.get("summary", "")
                 clean_desc = re.sub(r"<[^>]+>", "", raw_desc)[:200] if raw_desc else ""
-                
                 items.append(TrendingItem(
                     title=title,
                     link=entry.get("link", "#"),
@@ -709,63 +680,14 @@ async def trending(topic: str = "top", country: str = "US", lang: str = "en"):
                     published=entry.get("published", ""),
                     description=clean_desc,
                 ))
-        
         if items:
             return items
     except Exception as e:
         logger.error(f"RSS failed for {topic}: {e}")
     
-    # Final fallback - return sample data
-    return get_fallback_news(topic)
+    return []
 
-def get_fallback_news(topic):
-    """Sample news that always works"""
-    fallback_data = {
-        "top": [
-            {"title": "AI Fake News Detection Now 99% Accurate", "source": "Tech News", "desc": "New BERT models achieve breakthrough"},
-            {"title": "Global Fact-Checking Network Expands", "source": "World News", "desc": "International collaboration"},
-        ],
-        "world": [
-            {"title": "Countries Unite Against Misinformation", "source": "World News", "desc": "New international agreement"},
-        ],
-        "technology": [
-            {"title": "Gemini AI Powers Next-Gen Detection", "source": "AI Daily", "desc": "LLMs transform fact-checking"},
-        ],
-        "business": [
-            {"title": "Tech Stocks Rally on AI News", "source": "Business", "desc": "Market responds positively"},
-        ],
-        "science": [
-            {"title": "Machine Learning Breakthrough", "source": "Science", "desc": "New algorithms announced"},
-        ],
-        "health": [
-            {"title": "AI Helps Fight Misinformation", "source": "Health", "desc": "New tools for doctors"},
-        ],
-    }
-    
-    data = fallback_data.get(topic, fallback_data["top"])
-    return [TrendingItem(
-        title=item["title"],
-        link="#",
-        source=item["source"],
-        published="",
-        description=item["desc"],
-    ) for item in data]
 app.include_router(api_router)
-
-# ---------- Serve React root and catch-all ----------
-#if frontend_build_path.exists():
-    #@app.get("/")
-   # async def serve_react_root():
-       # return FileResponse(frontend_build_path / "index.html")
-
-   # @app.get("/{full_path:path}")
-    #async def serve_react_spa(full_path: str):
-        #if full_path.startswith("api/"):
-         #   raise HTTPException(status_code=404, detail="Not found")
-        #file_path = frontend_build_path / full_path
-        #if file_path.exists() and file_path.is_file():
-        #    return FileResponse(file_path)
-        #return FileResponse(frontend_build_path / "index.html")
 
 app.add_middleware(
     CORSMiddleware,
@@ -777,29 +699,22 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def startup_event():
-    """Initialize on startup"""
     logger.info("Starting up...")
-    
-    # Load BERT model in threadpool (non-blocking)
     try:
         await run_in_threadpool(_load_model)
         logger.info("BERT model loaded successfully")
     except Exception as e:
         logger.error(f"Failed to load BERT model: {e}")
-    
-    # Create MongoDB indexes
     try:
         await db.chat_messages.create_index("created_at", expireAfterSeconds=60*60*24*30)
         await db.chat_messages.create_index("analysis_id")
         logger.info("MongoDB indexes created/verified")
     except Exception as e:
         logger.warning(f"Index creation failed: {e}")
-    
     logger.info("Startup complete")
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
-    """Close MongoDB connection on shutdown"""
     logger.info("Shutting down...")
     client.close()
     logger.info("MongoDB connection closed")
