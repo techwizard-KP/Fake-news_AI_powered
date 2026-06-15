@@ -13,3 +13,4 @@ aiohttp
 pymongo
 newspaper3k
 google-generativeai
+lxml_html_clean
