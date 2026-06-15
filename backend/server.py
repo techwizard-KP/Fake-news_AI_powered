@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field, ConfigDict
 import requests
 from bs4 import BeautifulSoup
 import feedparser
-from googlenewsdecoder import gnewsdecoder
+#from googlenewsdecoder import gnewsdecoder
 import google.generativeai as genai
 from newspaper import Article
 import asyncio
