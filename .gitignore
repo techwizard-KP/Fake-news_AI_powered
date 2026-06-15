@@ -1,0 +1,23 @@
+# Python
+venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+backend/venv/
+backend/__pycache__/
+backend/.env
+backend/test_*.py
+
+# Node
+node_modules/
+frontend/node_modules/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test reports
+test_reports/
+frontend/.env
+frontend/build/

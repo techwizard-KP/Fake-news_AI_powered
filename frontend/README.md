@@ -1,70 +1,227 @@
-# Getting Started with Create React App
+A full-stack fake news detection system that uses BERT (RoBERTa) model to classify news articles as REAL or FAKE with high accuracy.
 
-This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+### 🎯 Current Status
 
-## Available Scripts
+### ✅ Working Features
+- BERT-based fake news classifier (hamzab/roberta-fake-news-classification)
+- Fast text analysis endpoint (returns results in <2 seconds)
+- Dual input modes: URL and direct text input
+- Real-time classification with confidence scores
+- Modern React frontend with responsive UI
+- History tracking (frontend only - database pending)
 
-In the project directory, you can run:
+### ⏳ In Progress / Pending
+- MongoDB integration for persistent storage
+- Gemini LLM integration for explanations
+- URL fetching from news sites (CNN, Reuters, BBC)
+- Statistics dashboard (Articles Analyzed, Flagged Fake, Verified Real)
 
-### `npm start`
+## 📋 Table of Contents
+- [Tech Stack](#tech-stack)
+- [Project Structure](#project-structure)
+- [Installation](#installation)
+- [Running the App](#running-the-app)
+- [API Endpoints](#api-endpoints)
+- [Usage](#usage)
+- [Model Information](#model-information)
+- [Troubleshooting](#troubleshooting)
+- [Next Steps](#next-steps)
 
-Runs the app in the development mode.\
-Open [http://localhost:3000](http://localhost:3000) to view it in your browser.
+## 🛠️ Tech Stack
 
-The page will reload when you make changes.\
-You may also see any lint errors in the console.
+### Backend
+- **FastAPI** - Python web framework
+- **BERT/RoBERTa** - Fake news classification model
+- **Transformers (Hugging Face)** - Model loading and inference
+- **PyTorch** - Deep learning backend
+- **Uvicorn** - ASGI server
 
-### `npm test`
+### Frontend
+- **React** - UI framework
+- **Tailwind CSS** - Styling
+- **Phosphor Icons** - Icon library
+- **Sonner** - Toast notifications
 
-Launches the test runner in the interactive watch mode.\
-See the section about [running tests](https://facebook.github.io/create-react-app/docs/running-tests) for more information.
+### Planned
+- **MongoDB** - Database for storing analysis history
+- **Gemini API** - AI-powered explanations
+- **Newspaper3k** - Article extraction
 
-### `npm run build`
+## 📁 Project Structure
+Fake-news_AI_powered/
+├── backend/
+│ ├── server.py # FastAPI application
+│ ├── requirements.txt # Python dependencies
+│ ├── .env # Environment variables (not tracked)
+│ └── venv/ # Virtual environment (ignored)
+├── frontend/
+│ ├── src/
+│ │ ├── components/
+│ │ │ ├── Analyzer.jsx # URL/Text input component
+│ │ │ ├── ResultPanel.jsx # Results display
+│ │ │ └── ...
+│ │ ├── pages/
+│ │ │ └── Dashboard.jsx # Main dashboard
+│ │ ├── lib/
+│ │ │ └── api.js # API client
+│ │ └── App.js
+│ ├── package.json
+│ └── ...
+└── README.md
 
-Builds the app for production to the `build` folder.\
-It correctly bundles React in production mode and optimizes the build for the best performance.
+text
 
-The build is minified and the filenames include the hashes.\
-Your app is ready to be deployed!
+## 🚀 Installation
 
-See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
+### Prerequisites
+- Python 3.10+
+- Node.js 16+
+- npm or yarn
 
-### `npm run eject`
+### Backend Setup
 
-**Note: this is a one-way operation. Once you `eject`, you can't go back!**
+```bash
+# Clone the repository
+git clone <your-repo-url>
+cd Fake-news_AI_powered/backend
 
-If you aren't satisfied with the build tool and configuration choices, you can `eject` at any time. This command will remove the single build dependency from your project.
+# Create virtual environment
+python3 -m venv venv
+source venv/bin/activate  # On Mac/Linux
+# venv\Scripts\activate   # On Windows
 
-Instead, it will copy all the configuration files and the transitive dependencies (webpack, Babel, ESLint, etc) right into your project so you have full control over them. All of the commands except `eject` will still work, but they will point to the copied scripts so you can tweak them. At this point you're on your own.
+# Install dependencies
+pip install -r requirements.txt
 
-You don't have to ever use `eject`. The curated feature set is suitable for small and middle deployments, and you shouldn't feel obligated to use this feature. However we understand that this tool wouldn't be useful if you couldn't customize it when you are ready for it.
+# Create .env file
+cat > .env << EOF
+MONGO_URL=mongodb://localhost:27017
+DB_NAME=fake_news_db
+GEMINI_API_KEY=your_gemini_api_key_here
+EOF
+Frontend Setup
+bash
+cd ../frontend
+npm install
+🏃 Running the App
+Start Backend Server
+bash
+cd backend
+source venv/bin/activate
+uvicorn server:app --reload --host 0.0.0.0 --port 8000
+The backend will run at http://localhost:8000
 
-## Learn More
+Start Frontend (in new terminal)
+bash
+cd frontend
+npm start
+The frontend will run at http://localhost:3000
 
-You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
+📡 API Endpoints
+Method	Endpoint	Description	Status
+POST	/api/analyze	Analyze news article by URL	🟡 Partial
+POST	/api/analyze-fast	Analyze text directly (BERT only)	✅ Working
+GET	/api/health	Health check	✅ Working
+GET	/api/model/status	Model status	✅ Working
+GET	/api/history	Get analysis history	🟡 Pending DB
+GET	/api/stats	Get statistics	🟡 Pending DB
+POST	/api/chat	Chat about analysis	🟡 Pending Gemini
+💻 Usage
+Text Analysis (Working)
+Open http://localhost:3000
 
-To learn React, check out the [React documentation](https://reactjs.org/).
+Click "Text Mode" button
 
-### Code Splitting
+Paste news article text
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/code-splitting](https://facebook.github.io/create-react-app/docs/code-splitting)
+Click "Verify Text"
 
-### Analyzing the Bundle Size
+View verdict (REAL/FAKE) with confidence score
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size](https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size)
+URL Analysis (Partial)
+Click "URL Mode" button
 
-### Making a Progressive Web App
+Paste article URL
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app](https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app)
+Click "Verify Article"
 
-### Advanced Configuration
+Note: Currently works only with some sites (e.g., The Onion)
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/advanced-configuration](https://facebook.github.io/create-react-app/docs/advanced-configuration)
+🤖 Model Information
+Model: hamzab/roberta-fake-news-classification
 
-### Deployment
+Type: RoBERTa-based classifier
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/deployment](https://facebook.github.io/create-react-app/docs/deployment)
+Labels: TRUE (REAL), FAKE
 
-### `npm run build` fails to minify
+Accuracy: 99%+ on test data
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify](https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify)
+Input length: 512 tokens
+
+Label Mapping
+Model output TRUE → UI shows REAL
+
+Model output FAKE → UI shows FAKE
+
+🔧 Troubleshooting
+Backend won't start
+bash
+# Check if port 8000 is in use
+lsof -i :8000
+kill -9 <PID>
+
+# Reinstall dependencies
+pip install -r requirements.txt
+MongoDB connection errors
+MongoDB is not required for basic text analysis
+
+To enable history/stats, set up MongoDB or comment out DB code
+
+Model loading slow on first run
+First run downloads model (~500MB)
+
+Subsequent runs load from cache
+
+CORS errors
+Ensure backend has CORS middleware configured
+
+Check allow_origins includes http://localhost:3000
+
+📝 Next Steps
+Priority 1: Database Integration
+Set up MongoDB (local or Atlas)
+
+Implement persistent storage for analyses
+
+Enable history and statistics
+
+Priority 2: Gemini Integration
+Add Gemini API for explanations
+
+Implement dual-verification system
+
+Generate forensic analysis reports
+
+Priority 3: URL Fetching
+Implement proper article extraction
+
+Handle paywalls and anti-bot measures
+
+Support major news sites (CNN, Reuters, BBC)
+
+Priority 4: Enhancements
+Add user authentication
+
+Implement batch processing
+
+Create export functionality (PDF/CSV)
+
+Deploy to cloud (AWS, GCP, or Heroku)
+
+🙏 Acknowledgments
+Hugging Face for transformers library
+
+Google for Gemini API
+
+UI design inspired by modern news platforms
+

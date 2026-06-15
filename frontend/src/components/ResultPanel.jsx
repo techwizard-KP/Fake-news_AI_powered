@@ -259,23 +259,23 @@ const ResultPanel = forwardRef(function ResultPanel({ result, loading }, ref) {
       {(result.bert_verdict || result.gemini_verdict) && (
         <div className="border-b border-slate-300 grid grid-cols-2 divide-x divide-slate-300" data-testid="model-breakdown">
           <ModelCard
-            label="BERT · RoBERTa (secondary)"
-            verdict={result.bert_verdict}
-            confidence={result.bert_confidence}
-            testid="bert-card"
-          />
-          <ModelCard
-            label="Gemini · 2.5 Flash (primary)"
-            verdict={result.gemini_verdict}
-            confidence={result.gemini_confidence}
-            reason={result.gemini_reason}
-            testid="gemini-card"
-          />
+                label="Gemini · 2.5 Flash (primary)"  // ← LEFT
+                verdict={result.gemini_verdict}
+                confidence={result.gemini_confidence}
+                reason={result.gemini_reason}
+                testid="gemini-card"
+              />
+              <ModelCard
+                label="BERT · RoBERTa (secondary)"  // ← RIGHT
+                verdict={result.bert_verdict}
+                confidence={result.bert_confidence}
+                testid="bert-card"
+              />
           {result.agreement === false && (
             <div className="col-span-2 px-6 py-3 bg-amber-50 border-t border-amber-300 text-xs tracking-[0.15em] uppercase font-bold text-amber-800 flex items-center gap-2" data-testid="disagreement-banner">
-              <span className="w-2 h-2 bg-amber-500 inline-block" />
-              BERT (legacy 2017 dataset) disagreed · Gemini verdict was used
-            </div>
+            <span className="w-2 h-2 bg-amber-500 inline-block" />
+            Gemini (primary) and BERT (secondary- legendary 2017 Dataset) disagreed · Gemini verdict was used
+          </div>
           )}
         </div>
       )}
