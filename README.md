@@ -2,6 +2,7 @@
 
 A production-ready full-stack application that detects fake news using **BERT (RoBERTa)** and **Gemini AI**, with **RAG-powered semantic search**, real-time classification, chat interface, and persistent storage.
 
+Please download the Demo video, it has been attached(IMG_2792)
 ## ✨ Features
 
 ### Core Functionality
